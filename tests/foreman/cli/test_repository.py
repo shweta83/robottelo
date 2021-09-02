@@ -45,6 +45,7 @@ from robottelo.cli.settings import Settings
 from robottelo.cli.srpm import Srpm
 from robottelo.cli.task import Task
 from robottelo.cli.user import User
+from robottelo.config import settings
 from robottelo.constants import CONTAINER_REGISTRY_HUB
 from robottelo.constants import CONTAINER_UPSTREAM_NAME
 from robottelo.constants import CUSTOM_FILE_REPO_FILES_COUNT
@@ -54,25 +55,12 @@ from robottelo.constants import OS_TEMPLATE_DATA_FILE
 from robottelo.constants import REPO_TYPE
 from robottelo.constants import RPM_TO_UPLOAD
 from robottelo.constants import SRPM_TO_UPLOAD
+from robottelo.constants.repos import ANSIBLE_GALAXY
 from robottelo.constants.repos import CUSTOM_FILE_REPO
-from robottelo.constants.repos import CUSTOM_MODULE_STREAM_REPO_1
-from robottelo.constants.repos import CUSTOM_MODULE_STREAM_REPO_2
-from robottelo.constants.repos import FAKE_0_YUM_REPO
-from robottelo.constants.repos import FAKE_1_PUPPET_REPO
-from robottelo.constants.repos import FAKE_1_YUM_REPO
-from robottelo.constants.repos import FAKE_2_PUPPET_REPO
-from robottelo.constants.repos import FAKE_2_YUM_REPO
-from robottelo.constants.repos import FAKE_3_PUPPET_REPO
-from robottelo.constants.repos import FAKE_3_YUM_REPO
-from robottelo.constants.repos import FAKE_4_PUPPET_REPO
-from robottelo.constants.repos import FAKE_4_YUM_REPO
-from robottelo.constants.repos import FAKE_5_PUPPET_REPO
 from robottelo.constants.repos import FAKE_5_YUM_REPO
 from robottelo.constants.repos import FAKE_7_PUPPET_REPO
-from robottelo.constants.repos import FAKE_PULP_REMOTE_FILEREPO
 from robottelo.constants.repos import FAKE_YUM_DRPM_REPO
 from robottelo.constants.repos import FAKE_YUM_MD5_REPO
-from robottelo.constants.repos import FAKE_YUM_MIXED_REPO
 from robottelo.constants.repos import FAKE_YUM_SRPM_REPO
 from robottelo.datafactory import invalid_http_credentials
 from robottelo.datafactory import invalid_values_list
@@ -87,13 +75,19 @@ from robottelo.utils.issue_handlers import is_open
 # from robottelo.constants.repos import FEDORA27_OSTREE_REPO
 
 
-YUM_REPOS = (FAKE_0_YUM_REPO, FAKE_1_YUM_REPO, FAKE_2_YUM_REPO, FAKE_3_YUM_REPO, FAKE_4_YUM_REPO)
+YUM_REPOS = (
+    settings.repos.yum_0.url,
+    settings.repos.yum_1.url,
+    settings.repos.yum_2.url,
+    settings.repos.yum_3.url,
+    settings.repos.yum_4.url,
+)
 PUPPET_REPOS = (
-    FAKE_1_PUPPET_REPO,
-    FAKE_2_PUPPET_REPO,
-    FAKE_3_PUPPET_REPO,
-    FAKE_4_PUPPET_REPO,
-    FAKE_5_PUPPET_REPO,
+    settings.repos.puppet_1.url,
+    settings.repos.puppet_2.url,
+    settings.repos.puppet_3.url,
+    settings.repos.puppet_4.url,
+    settings.repos.puppet_5.url,
 )
 
 
@@ -804,7 +798,11 @@ class TestRepository:
         **parametrized(
             [
                 {'content-type': 'yum', 'url': url}
-                for url in (FAKE_1_YUM_REPO, FAKE_3_YUM_REPO, FAKE_4_YUM_REPO)
+                for url in (
+                    settings.repos.yum_1.url,
+                    settings.repos.yum_3.url,
+                    settings.repos.yum_4.url,
+                )
             ]
         ),
         indirect=True,
@@ -1109,7 +1107,7 @@ class TestRepository:
     @pytest.mark.tier2
     @pytest.mark.parametrize(
         'repo_options',
-        **parametrized([{'content-type': 'yum', 'url': FAKE_1_YUM_REPO}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.yum_1.url}]),
         indirect=True,
     )
     def test_positive_resynchronize_rpm_repo(self, repo):
@@ -1150,7 +1148,7 @@ class TestRepository:
             [
                 {
                     'content-type': 'yum',
-                    'url': FAKE_YUM_MIXED_REPO,
+                    'url': settings.repos.yum_mixed.url,
                     'ignorable-content': ['erratum', 'srpm', 'drpm'],
                 }
             ]
@@ -1229,11 +1227,11 @@ class TestRepository:
                     for repo in (FAKE_5_YUM_REPO, FAKE_7_PUPPET_REPO)
                 ]
                 + [
-                    FAKE_4_YUM_REPO,
-                    FAKE_1_PUPPET_REPO,
-                    FAKE_2_PUPPET_REPO,
-                    FAKE_3_PUPPET_REPO,
-                    FAKE_2_YUM_REPO,
+                    settings.repos.yum_4.url,
+                    settings.repos.puppet_1.url,
+                    settings.repos.puppet_2.url,
+                    settings.repos.puppet_3.url,
+                    settings.repos.yum_2.url,
                 ]
             ]
         ),
@@ -1471,7 +1469,7 @@ class TestRepository:
     @pytest.mark.tier1
     @pytest.mark.parametrize(
         'repo_options',
-        **parametrized([{'content-type': 'yum', 'url': FAKE_1_YUM_REPO}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.yum_1.url}]),
         indirect=True,
     )
     def test_positive_delete_rpm(self, repo):
@@ -1498,7 +1496,7 @@ class TestRepository:
     @pytest.mark.upgrade
     @pytest.mark.parametrize(
         'repo_options',
-        **parametrized([{'content-type': 'yum', 'url': FAKE_1_YUM_REPO}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.yum_1.url}]),
         indirect=True,
     )
     def test_positive_remove_content_by_repo_name(self, module_org, module_product, repo):
@@ -1553,7 +1551,7 @@ class TestRepository:
     @pytest.mark.upgrade
     @pytest.mark.parametrize(
         'repo_options',
-        **parametrized([{'content-type': 'yum', 'url': FAKE_1_YUM_REPO}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.yum_1.url}]),
         indirect=True,
     )
     def test_positive_remove_content_rpm(self, repo):
@@ -1656,7 +1654,7 @@ class TestRepository:
     @pytest.mark.tier2
     @pytest.mark.parametrize(
         'repo_options',
-        **parametrized([{'content-type': 'yum', 'url': FAKE_1_YUM_REPO}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.yum_1.url}]),
         indirect=True,
     )
     def test_negative_restricted_user_cv_add_repository(self, module_org, repo):
@@ -1943,7 +1941,7 @@ class TestRepository:
     @pytest.mark.tier1
     @pytest.mark.parametrize(
         'repo_options',
-        **parametrized([{'content-type': 'yum', 'url': CUSTOM_MODULE_STREAM_REPO_2}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.module_stream_1.url}]),
         indirect=True,
     )
     def test_positive_create_get_update_delete_module_streams(
@@ -1992,7 +1990,7 @@ class TestRepository:
             {
                 'product-id': module_product.id,
                 'id': repo['id'],
-                'url': CUSTOM_MODULE_STREAM_REPO_2,
+                'url': settings.repos.module_stream_1.url,
             }
         )
         Repository.synchronize({'id': repo['id']})
@@ -2008,12 +2006,12 @@ class TestRepository:
     @pytest.mark.tier1
     @pytest.mark.parametrize(
         'repo_options',
-        **parametrized([{'content-type': 'yum', 'url': CUSTOM_MODULE_STREAM_REPO_1}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.module_stream_0.url}]),
         indirect=True,
     )
     @pytest.mark.parametrize(
         'repo_options_2',
-        **parametrized([{'content-type': 'yum', 'url': CUSTOM_MODULE_STREAM_REPO_2}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.module_stream_1.url}]),
     )
     def test_module_stream_list_validation(self, module_org, repo, repo_options_2):
         """Check module-stream get with list on hammer.
@@ -2050,7 +2048,7 @@ class TestRepository:
     @pytest.mark.tier1
     @pytest.mark.parametrize(
         'repo_options',
-        **parametrized([{'content-type': 'yum', 'url': CUSTOM_MODULE_STREAM_REPO_2}]),
+        **parametrized([{'content-type': 'yum', 'url': settings.repos.module_stream_1.url}]),
         indirect=True,
     )
     def test_module_stream_info_validation(self, repo):
@@ -2378,6 +2376,43 @@ class TestSRPMRepository:
         )
         assert result.return_code == 0
         assert len(result.stdout) >= 1
+
+
+class TestAnsibleCollectionRepository:
+    """Ansible Collections repository tests"""
+
+    @pytest.mark.tier2
+    @pytest.mark.upgrade
+    @pytest.mark.parametrize(
+        'repo_options',
+        **parametrized(
+            [
+                {
+                    'content-type': 'ansible_collection',
+                    'url': ANSIBLE_GALAXY,
+                    'ansible-collection-requirements': '{collections: [ \
+                            { name: theforeman.foreman, version: "2.1.0" }, \
+                            { name: theforeman.operations, version: "0.1.0"} ]}',
+                }
+            ]
+        ),
+        indirect=True,
+    )
+    def test_positive_sync_ansible_collecion_from_gallaxy(self, repo, module_org, module_product):
+        """Sync ansible collection repository from Ansible Galaxy
+
+        :id: 4b6a819b-8c3d-4a74-bd97-ee3f34cf5d92
+
+        :expectedresults: All content synced successfully
+
+        :CaseLevel: Integration
+
+        :CaseImportance: High
+
+        """
+        Repository.synchronize({'id': repo['id']})
+        repo = Repository.info({'id': repo['id']})
+        assert repo['sync']['status'] == 'Success'
 
 
 class TestMD5Repository:
@@ -2836,7 +2871,7 @@ class TestFileRepository:
             [
                 {
                     'content-type': 'file',
-                    'url': FAKE_PULP_REMOTE_FILEREPO,
+                    'url': settings.repos.file_type_repo.url,
                     'name': gen_string('alpha'),
                 }
             ]

@@ -620,7 +620,9 @@ def make_repository_with_credentials(options=None, credentials=None):
         'http-proxy': None,
         'http-proxy-id': None,
         'http-proxy-policy': None,
-        'url': constants.repos.FAKE_1_YUM_REPO,
+        'ansible-collection-requirements': None,
+        'ansible-collection-requirements-file': None,
+        'url': settings.repos.yum_1.url,
     }
     repo_cls = _entity_with_credentials(credentials, Repository)
     return create_object(repo_cls, args, options)
@@ -1063,6 +1065,7 @@ def make_user(options=None):
         'mail': f'{login}@example.com',
         'organization-ids': None,
         'password': gen_alphanumeric(),
+        'timezone': None,
     }
     logger.debug(
         'User "{}" password not provided {} was generated'.format(args['login'], args['password'])

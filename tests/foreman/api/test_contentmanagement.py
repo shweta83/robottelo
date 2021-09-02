@@ -65,9 +65,7 @@ class TestSatelliteContentManagement:
         org = entities.Organization().create()
         for _ in range(2):
             product = entities.Product(organization=org).create()
-            repo = entities.Repository(
-                product=product, url=constants.repos.FAKE_7_YUM_REPO
-            ).create()
+            repo = entities.Repository(product=product, url=settings.repos.yum_7.url).create()
             response = repo.sync()
             assert response, f"Repository {repo} failed to sync."
 
@@ -88,7 +86,7 @@ class TestSatelliteContentManagement:
         """
         org = entities.Organization().create()
         product = entities.Product(organization=org).create()
-        repo = entities.Repository(product=product, url=constants.repos.FAKE_8_YUM_REPO).create()
+        repo = entities.Repository(product=product, url=settings.repos.yum_8.url).create()
         response = repo.sync()
         assert response, f"Repository {repo} failed to sync."
 
@@ -409,7 +407,7 @@ class TestCapsuleContentManagement:
         repo_name = gen_string('alphanumeric')
         # Create and publish custom repository with 2 packages in it
         repo_url = create_repo(
-            repo_name, constants.repos.FAKE_1_YUM_REPO, constants.FAKE_1_YUM_REPO_RPMS[0:2]
+            repo_name, settings.repos.yum_1.url, constants.FAKE_1_YUM_REPO_RPMS[0:2]
         )
         # Create organization, product, repository in satellite, and lifecycle
         # environment
@@ -538,7 +536,7 @@ class TestCapsuleContentManagement:
         assert lce_revision_capsule == new_lce_revision_capsule
 
         # Update a repository with 1 new rpm
-        create_repo(repo_name, constants.repos.FAKE_1_YUM_REPO, constants.FAKE_1_YUM_REPO_RPMS[-1:])
+        create_repo(repo_name, settings.repos.yum_1.url, constants.FAKE_1_YUM_REPO_RPMS[-1:])
         # Sync, publish and promote the repository
         repo.sync()
         repo = repo.read()
@@ -678,7 +676,7 @@ class TestCapsuleContentManagement:
 
         :CaseLevel: System
         """
-        repo_url = constants.repos.FAKE_3_YUM_REPO
+        repo_url = settings.repos.yum_3.url
         packages_count = constants.FAKE_3_YUM_REPOS_COUNT
         package = constants.FAKE_1_YUM_REPO_RPMS[0]
         # Create organization, product, repository in satellite, and lifecycle
@@ -808,7 +806,7 @@ class TestCapsuleContentManagement:
         repo2_name = gen_string('alphanumeric')
         # Create and publish first custom repository with 2 packages in it
         repo1_url = create_repo(
-            repo1_name, constants.repos.FAKE_1_YUM_REPO, constants.FAKE_1_YUM_REPO_RPMS[1:3]
+            repo1_name, settings.repos.yum_1.url, constants.FAKE_1_YUM_REPO_RPMS[1:3]
         )
         # Create and publish second repo with no packages in it
         repo2_url = create_repo(repo2_name)
@@ -954,7 +952,7 @@ class TestCapsuleContentManagement:
 
         :CaseLevel: System
         """
-        repo_url = constants.repos.FAKE_1_YUM_REPO
+        repo_url = settings.repos.yum_1.url
         packages_count = constants.FAKE_1_YUM_REPOS_COUNT
         # Create organization, product, repository in satellite, and lifecycle
         # environment
@@ -1092,131 +1090,6 @@ class TestCapsuleContentManagement:
         broken_links = {link for link in result.stdout if link}
 
         assert len(broken_links) == 0
-
-    @pytest.mark.tier4
-    @pytest.mark.skip_if_not_set('capsule', 'clients', 'fake_manifest')
-    def test_positive_sync_puppet_module_with_versions(self, capsule_configured):
-        """Ensure it's possible to sync multiple versions of the same puppet
-        module to the capsule
-
-        :id: 83a0ddd6-8a6a-43a0-b169-094a2556dd28
-
-        :customerscenario: true
-
-        :BZ: 1365952, 1655243
-
-        :Steps:
-
-            1. Register a capsule
-            2. Associate LCE with the capsule
-            3. Sync a puppet module with multiple versions
-            4. Publish a CV with one version of puppet module and promote it to
-               capsule's LCE
-            5. Wait for capsule synchronization to finish
-            6. Publish another CV with different version of puppet module and
-               promote it to capsule's LCE
-            7. Wait for capsule synchronization to finish once more
-
-        :expectedresults: Capsule was successfully synchronized, new version of
-            puppet module is present on capsule
-
-        :CaseLevel: System
-
-        :CaseImportance: Medium
-        """
-        module_name = 'versioned'
-        module_versions = ['2.2.2', '3.3.3']
-        org = entities.Organization().create()
-        lce = entities.LifecycleEnvironment(organization=org).create()
-        content_view = entities.ContentView(organization=org).create()
-        prod = entities.Product(organization=org).create()
-        puppet_repository = entities.Repository(
-            content_type=constants.REPO_TYPE['puppet'],
-            product=prod,
-            url=constants.repos.CUSTOM_PUPPET_REPO,
-        ).create()
-        capsule_configured.nailgun_capsule.content_add_lifecycle_environment(
-            data={'environment_id': lce.id}
-        )
-        result = capsule_configured.nailgun_capsule.content_lifecycle_environments()
-
-        assert len(result['results'])
-        assert lce.id in [capsule_lce['id'] for capsule_lce in result['results']]
-
-        puppet_repository.sync()
-        puppet_module_old = entities.PuppetModule().search(
-            query={'search': f'name={module_name} and version={module_versions[0]}'}
-        )[0]
-        # Add puppet module to the CV
-        entities.ContentViewPuppetModule(
-            content_view=content_view, id=puppet_module_old.id
-        ).create()
-        content_view = content_view.read()
-
-        assert len(content_view.puppet_module)
-
-        # Publish and promote CVV
-        content_view.publish()
-        content_view = content_view.read()
-
-        assert len(content_view.version) == 1
-
-        cvv = content_view.version[-1].read()
-        promote(cvv, lce.id)
-        cvv = cvv.read()
-
-        assert len(cvv.environment) == 2
-
-        # Wait till capsule sync finishes
-        sync_status = capsule_configured.nailgun_capsule.content_get_sync()
-
-        assert len(sync_status['active_sync_tasks']) or sync_status['last_sync_time']
-
-        for task in sync_status['active_sync_tasks']:
-            entities.ForemanTask(id=task['id']).poll()
-        sync_status = capsule_configured.nailgun_capsule.content_get_sync()
-        last_sync_time = sync_status['last_sync_time']
-        # Unassign old puppet module version from CV
-        entities.ContentViewPuppetModule(
-            content_view=content_view, id=content_view.puppet_module[0].id
-        ).delete()
-        # Assign new puppet module version
-        puppet_module_new = entities.PuppetModule().search(
-            query={'search': f'name={module_name} and version={module_versions[1]}'}
-        )[0]
-        entities.ContentViewPuppetModule(
-            content_view=content_view, id=puppet_module_new.id
-        ).create()
-
-        assert len(content_view.puppet_module)
-
-        # Publish and promote CVV
-        content_view.publish()
-        content_view = content_view.read()
-
-        assert len(content_view.version) == 2
-
-        cvv = content_view.version[-1].read()
-        promote(cvv, lce.id)
-        cvv = cvv.read()
-
-        assert len(cvv.environment) == 2
-
-        # Wait till capsule sync finishes
-        sync_status = capsule_configured.nailgun_capsule.content_get_sync()
-        if sync_status['active_sync_tasks']:
-            for task in sync_status['active_sync_tasks']:
-                entities.ForemanTask(id=task['id']).poll()
-        else:
-            assert sync_status['last_sync_time'] != last_sync_time
-
-        stored_modules = get_repo_files(
-            constants.PULP_PUBLISHED_PUPPET_REPOS_PATH, 'gz', capsule_configured.ip_addr
-        )
-        matching_filenames = filter(
-            lambda filename: f'{module_name}-{module_versions[1]}' in filename, stored_modules
-        )
-        assert next(matching_filenames, None)
 
     @pytest.mark.tier4
     @pytest.mark.skip_if_not_set('capsule', 'clients', 'fake_manifest')
