@@ -20,6 +20,39 @@ from robottelo.constants import DEFAULT_ORG, INSTALL_MEDIUM_URL, LIBVIRT_RESOURC
 from robottelo.logging import logger
 
 CUSTOM_REPO_ERRATA_ID = settings.repos.yum_0.errata[0]
+from robottelo.constants import DEFAULT_ORG
+from robottelo.constants import INSTALL_MEDIUM_URL
+from robottelo.constants import LIBVIRT_RESOURCE_URL
+from robottelo.logging import logger
+from robottelo.manifests import original_manifest
+from robottelo.manifests import upload_manifest_locked
+from robottelo.products import RepositoryCollection
+from robottelo.products import YumRepository
+
+CUSTOM_REPO_ERRATA_ID = settings.repos.yum_0.errata[2]
+
+
+@pytest.fixture(scope='module')
+def module_repos_col(module_org, module_lce, default_sat, request):
+    upload_manifest_locked(org_id=module_org.id)
+    repos_collection = RepositoryCollection(
+        repositories=[
+            # As Satellite Tools may be added as custom repo and to have a "Fully entitled" host,
+            # force the host to consume an RH product with adding a cdn repo.
+            YumRepository(url=settings.repos.yum_0.url),
+        ],
+    )
+    repos_collection.setup_content(module_org.id, module_lce.id)
+    yield repos_collection
+
+    @request.addfinalizer
+    def _cleanup():
+        try:
+            default_sat.api.Subscription(organization=module_org).delete_manifest(
+                data={'organization_id': module_org.id}
+            )
+        except Exception:
+            logger.exception('Exception cleaning manifest:')
 
 
 @pytest.fixture(scope='module')
@@ -309,9 +342,7 @@ def test_positive_errata_view_organization_switch(
 
     :CaseImportance: High
     """
-    rc = module_target_sat.cli_factory.RepositoryCollection(
-        repositories=[module_target_sat.cli_factory.YumRepository(settings.repos.yum_3.url)]
-    )
+    rc = RepositoryCollection(repositories=[YumRepository(settings.repos.yum_3.url)])
     rc.setup_content(module_org.id, module_lce.id)
     with session:
         assert (
@@ -336,6 +367,8 @@ def test_positive_product_view_organization_switch(session, module_org, module_p
 
     :expectedresults: Verify that the Product belonging to one Organization is not visible in
                       another organization.
+
+    :CaseLevel: Integration
 
     :CaseImportance: High
     """
