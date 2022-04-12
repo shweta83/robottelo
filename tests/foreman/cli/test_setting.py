@@ -462,6 +462,6 @@ def test_positive_failed_login_attempts_limit(setting_update, default_sat):
         assert output.status == 129
     result = default_sat.execute(f'hammer -u {username} -p {password} user list')
     assert result.status == 129
-    sleep(301)
+    sleep(180)
     result = default_sat.execute(f'hammer -u {username} -p {password} user list')
     assert result.status == 0
