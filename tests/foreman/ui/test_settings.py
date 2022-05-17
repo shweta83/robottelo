@@ -499,9 +499,9 @@ def test_negative_update_hostname_with_empty_fact(session, setting_update):
     new_hostname = ""
     property_name = setting_update.name
     with session:
-        response = session.settings.update(property_name, new_hostname)
-        assert response is not None, "Value can't be blank"
-
+        with pytest.raises(AssertionError) as context:
+            session.settings.update(property_name, new_hostname)
+            assert is_valid_error_message(str(context.value))
 
 @pytest.mark.run_in_one_thread
 @pytest.mark.tier3
