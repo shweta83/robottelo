@@ -26,7 +26,7 @@ pytestmark = pytest.mark.tier1
 @pytest.mark.e2e
 @pytest.mark.no_containers
 def test_host_registration_end_to_end(
-    module_sca_manifest_org,
+    module_entitlement_manifest_org,
     module_location,
     module_activation_key,
     module_target_sat,
@@ -46,7 +46,7 @@ def test_host_registration_end_to_end(
 
     :customerscenario: true
     """
-    org = module_sca_manifest_org
+    org = module_entitlement_manifest_org
     command = module_target_sat.api.RegistrationCommand(
         organization=org,
         activation_keys=[module_activation_key.name],
@@ -89,7 +89,7 @@ def test_host_registration_end_to_end(
 @pytest.mark.tier3
 @pytest.mark.rhel_ver_match('[^6]')
 def test_positive_allow_reregistration_when_dmi_uuid_changed(
-    module_sca_manifest_org,
+    module_entitlement_manifest_org,
     rhel_contenthost,
     target_sat,
     module_activation_key,
@@ -108,7 +108,7 @@ def test_positive_allow_reregistration_when_dmi_uuid_changed(
     """
     uuid_1 = str(uuid.uuid1())
     uuid_2 = str(uuid.uuid4())
-    org = module_sca_manifest_org
+    org = module_entitlement_manifest_org
     target_sat.execute(f'echo \'{{"dmi.system.uuid": "{uuid_1}"}}\' > /etc/rhsm/facts/uuid.facts')
     command = target_sat.api.RegistrationCommand(
         organization=org,
@@ -131,7 +131,7 @@ def test_positive_allow_reregistration_when_dmi_uuid_changed(
 
 def test_positive_update_packages_registration(
     module_target_sat,
-    module_sca_manifest_org,
+    module_entitlement_manifest_org,
     module_location,
     rhel8_contenthost,
     module_activation_key,
@@ -142,7 +142,7 @@ def test_positive_update_packages_registration(
 
     :expectedresults: Package update is successful on host post registration.
     """
-    org = module_sca_manifest_org
+    org = module_entitlement_manifest_org
     command = module_target_sat.api.RegistrationCommand(
         organization=org,
         location=module_location,
@@ -162,7 +162,7 @@ def test_positive_update_packages_registration(
 @pytest.mark.no_containers
 def test_positive_rex_interface_for_global_registration(
     module_target_sat,
-    module_sca_manifest_org,
+    module_entitlement_manifest_org,
     module_location,
     rhel8_contenthost,
     module_activation_key,
@@ -186,7 +186,7 @@ def test_positive_rex_interface_for_global_registration(
     add_interface_command = f'ip link add eth1 type dummy;ifconfig eth1 hw ether {mac_address};ip addr add {ip}/24 brd + dev eth1 label eth1:1;ip link set dev eth1 up'
     result = rhel8_contenthost.execute(add_interface_command)
     assert result.status == 0
-    org = module_sca_manifest_org
+    org = module_entitlement_manifest_org
     command = module_target_sat.api.RegistrationCommand(
         organization=org,
         location=module_location,

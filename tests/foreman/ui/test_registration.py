@@ -498,7 +498,7 @@ def test_global_registration_token_restriction(
 
 def test_positive_host_registration_with_non_admin_user(
     test_name,
-    module_sca_manifest_org,
+    module_entitlement_manifest_org,
     module_location,
     target_sat,
     rhel8_contenthost,
@@ -514,7 +514,7 @@ def test_positive_host_registration_with_non_admin_user(
     :CaseLevel: Component
     """
     user_password = gen_string('alpha')
-    org = module_sca_manifest_org
+    org = module_entitlement_manifest_org
     role = target_sat.api.Role(organization=[org]).create()
 
     user_permissions = {
