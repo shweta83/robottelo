@@ -1,17 +1,27 @@
-from robottelo.host_helpers.capsule_mixins import CapsuleInfo
-from robottelo.host_helpers.contenthost_mixins import SystemFacts
-from robottelo.host_helpers.contenthost_mixins import VersionedContent
-from robottelo.host_helpers.satellite_mixins import ContentInfo
-from robottelo.host_helpers.satellite_mixins import Factories
+from robottelo.host_helpers.capsule_mixins import CapsuleInfo, EnablePluginsCapsule
+from robottelo.host_helpers.contenthost_mixins import (
+    HostInfo,
+    SystemFacts,
+    VersionedContent,
+)
+from robottelo.host_helpers.satellite_mixins import (
+    ContentInfo,
+    EnablePluginsSatellite,
+    Factories,
+    ProvisioningSetup,
+    SystemInfo,
+)
 
 
-class ContentHostMixins(SystemFacts, VersionedContent):
+class ContentHostMixins(HostInfo, SystemFacts, VersionedContent):
     pass
 
 
-class CapsuleMixins(CapsuleInfo):
+class CapsuleMixins(CapsuleInfo, EnablePluginsCapsule):
     pass
 
 
-class SatelliteMixins(ContentInfo, Factories):
+class SatelliteMixins(
+    ContentInfo, Factories, SystemInfo, EnablePluginsSatellite, ProvisioningSetup
+):
     pass

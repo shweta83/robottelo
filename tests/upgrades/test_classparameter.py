@@ -4,24 +4,16 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
+:CaseComponent: Puppet
 
-:CaseComponent: Parameters
-
-:Assignee: pondrejk
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import json
 
 import pytest
-from nailgun import entities
-from upgrade_tests.helpers.scenarios import create_dict
-from upgrade_tests.helpers.scenarios import get_entity_data
 
 
 def _valid_sc_parameters_data():
@@ -54,29 +46,32 @@ class TestScenarioPositivePuppetParameterAndDatatypeIntact:
     """
 
     @pytest.fixture(scope="class")
-    def _setup_scenario(self, target_sat):
+    def setup_scenario(self, class_target_sat):
         """Import some parametrized puppet classes. This is required to make
         sure that we have smart class variable available.
         Read all available smart class parameters for imported puppet class to
         be able to work with unique entity for each specific test.
         """
-        self.org = entities.Organization().create()
+        self.org = class_target_sat.api.Organization().create()
         repo = 'api_test_classparameters'
-        env_name = target_sat.create_custom_environment(repo=repo)
-        self.puppet_class = entities.PuppetClass().search(
+        env_name = class_target_sat.create_custom_environment(repo=repo)
+        self.puppet_class = class_target_sat.api.PuppetClass().search(
             query={'search': f'name = "{repo}" and environment = "{env_name}"'}
         )[0]
-        self.sc_params_list = entities.SmartClassParameters().search(
+        self.sc_params_list = class_target_sat.api.SmartClassParameters().search(
             query={'search': f'puppetclass="{self.puppet_class.name}"', 'per_page': 1000}
         )
-        scenario_ents = {self.__class__.__name__: {'puppet_class': self.puppet_class.name}}
-        create_dict(scenario_ents)
+        return {
+            'puppet_class': self.puppet_class.name,
+        }
 
     @pytest.fixture(scope="class")
-    def _clean_scenario(self, request, class_target_sat):
+    def _clean_scenario(self, request, class_pre_upgrade_data, class_target_sat):
         @request.addfinalizer
         def _cleanup():
-            puppet_class = get_entity_data(self.__class__.__name__)['puppet_class']
+            puppet_class = getattr(
+                class_pre_upgrade_data, next(iter(class_pre_upgrade_data))
+            ).puppet_class
             class_target_sat.delete_puppet_class(puppet_class)
 
     def _validate_value(self, data, sc_param):
@@ -87,7 +82,7 @@ class TestScenarioPositivePuppetParameterAndDatatypeIntact:
         :param sc_param: The Actual Value of parameter
         """
         if data['sc_type'] == 'boolean':
-            assert sc_param.default_value == (True if data['value'] == '1' else False)
+            assert sc_param.default_value == (data['value'] == '1')
         elif data['sc_type'] == 'array':
             string_list = [str(element) for element in sc_param.default_value]
             assert str(string_list) == data['value']
@@ -99,7 +94,9 @@ class TestScenarioPositivePuppetParameterAndDatatypeIntact:
 
     @pytest.mark.pre_upgrade
     @pytest.mark.parametrize('count', list(range(1, 10)))
-    def test_pre_puppet_class_parameter_data_and_type(self, count, _setup_scenario):
+    def test_pre_puppet_class_parameter_data_and_type(
+        self, class_target_sat, count, setup_scenario, save_test_data
+    ):
         """Puppet Class parameters with different data type are created
 
         :id: preupgrade-08012f39-240b-40df-b893-2ee767129737
@@ -114,8 +111,9 @@ class TestScenarioPositivePuppetParameterAndDatatypeIntact:
 
         :expectedresults: The parameters are updated with different data types
         """
+        save_test_data(setup_scenario)
         data = _valid_sc_parameters_data()[count - 1]
-        sc_param = entities.SmartClassParameters().search(
+        sc_param = class_target_sat.api.SmartClassParameters().search(
             query={'search': f'parameter="api_classparameters_scp_00{count}"'}
         )[0]
         sc_param.override = True
@@ -127,8 +125,11 @@ class TestScenarioPositivePuppetParameterAndDatatypeIntact:
         self._validate_value(data, sc_param)
 
     @pytest.mark.post_upgrade(depend_on=test_pre_puppet_class_parameter_data_and_type)
+    @pytest.mark.usefixtures('_clean_scenario')
     @pytest.mark.parametrize('count', list(range(1, 10)))
-    def test_post_puppet_class_parameter_data_and_type(self, count, _clean_scenario):
+    def test_post_puppet_class_parameter_data_and_type(
+        self, count, class_pre_upgrade_data, class_target_sat
+    ):
         """Puppet Class Parameters value and type is intact post upgrade
 
         :id: postupgrade-08012f39-240b-40df-b893-2ee767129737
@@ -140,9 +141,8 @@ class TestScenarioPositivePuppetParameterAndDatatypeIntact:
         :expectedresults: The puppet class parameters data and type should be
             intact post upgrade
         """
-
         data = _valid_sc_parameters_data()[count - 1]
-        sc_param = entities.SmartClassParameters().search(
+        sc_param = class_target_sat.api.SmartClassParameters().search(
             query={'search': f'parameter="api_classparameters_scp_00{count}"'}
         )[0]
         assert sc_param.parameter_type == data['sc_type']

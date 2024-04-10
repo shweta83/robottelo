@@ -4,49 +4,37 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: SubscriptionManagement
 
-:Assignee: chiggins
-
-:TestType: Functional
+:team: Phoenix-subscriptions
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import time
 from tempfile import mkstemp
+import time
 
-import pytest
-from airgun.session import Session
 from fauxfactory import gen_string
-from nailgun import entities
+import pytest
 
-from robottelo import manifests
-from robottelo.api.utils import create_role_permissions
-from robottelo.api.utils import enable_rhrepo_and_fetchid
-from robottelo.api.utils import upload_manifest
-from robottelo.cli.factory import make_virt_who_config
 from robottelo.config import settings
-from robottelo.constants import DEFAULT_SUBSCRIPTION_NAME
-from robottelo.constants import DISTRO_RHEL7
-from robottelo.constants import PRDS
-from robottelo.constants import REPOS
-from robottelo.constants import REPOSET
-from robottelo.constants import VDC_SUBSCRIPTION_NAME
-from robottelo.constants import VIRT_WHO_HYPERVISOR_TYPES
+from robottelo.constants import (
+    DEFAULT_SUBSCRIPTION_NAME,
+    PRDS,
+    REPOS,
+    REPOSET,
+    VDC_SUBSCRIPTION_NAME,
+    VIRT_WHO_HYPERVISOR_TYPES,
+)
+from robottelo.utils.manifest import clone
 
 pytestmark = [pytest.mark.run_in_one_thread, pytest.mark.skip_if_not_set('fake_manifest')]
 
 
 @pytest.fixture(scope='module')
-def golden_ticket_host_setup():
-    org = entities.Organization().create()
-    with manifests.clone(name='golden_ticket') as manifest:
-        upload_manifest(org.id, manifest.content)
-    rh_repo_id = enable_rhrepo_and_fetchid(
+def golden_ticket_host_setup(function_entitlement_manifest_org, module_target_sat):
+    org = function_entitlement_manifest_org
+    rh_repo_id = module_target_sat.api_factory.enable_rhrepo_and_fetchid(
         basearch='x86_64',
         org_id=org.id,
         product=PRDS['rhel'],
@@ -54,26 +42,27 @@ def golden_ticket_host_setup():
         reposet=REPOSET['rhst7'],
         releasever=None,
     )
-    rh_repo = entities.Repository(id=rh_repo_id).read()
+    rh_repo = module_target_sat.api.Repository(id=rh_repo_id).read()
     rh_repo.sync()
-    custom_product = entities.Product(organization=org).create()
-    custom_repo = entities.Repository(
+    custom_product = module_target_sat.api.Product(organization=org).create()
+    custom_repo = module_target_sat.api.Repository(
         name=gen_string('alphanumeric').upper(), product=custom_product
     ).create()
     custom_repo.sync()
-    ak = entities.ActivationKey(
+    ak = module_target_sat.api.ActivationKey(
         content_view=org.default_content_view,
         max_hosts=100,
         organization=org,
-        environment=entities.LifecycleEnvironment(id=org.library.id),
+        environment=module_target_sat.api.LifecycleEnvironment(id=org.library.id),
         auto_attach=True,
     ).create()
     return org, ak
 
 
+@pytest.mark.e2e
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_end_to_end(session):
+def test_positive_end_to_end(session, target_sat):
     """Upload a manifest with minimal input parameters, attempt to
     delete it with checking the warning message and hit 'Cancel' button after than delete it.
 
@@ -86,27 +75,26 @@ def test_positive_end_to_end(session):
             message which warns user about downsides and consequences of manifest deletion.
         4. When hitting cancel the manifest was not deleted.
         5. When deleting and confirming deletion, the manifest was deleted successfully.
+        6. When reimporting manifest, the manifest is reimported successfully and the candlepin log
+            shows no error.
 
-    :BZ: 1266827
+    :BZ: 1266827, 2066899, 2076684
+
+    :SubComponent: Candlepin
+
+    :customerscenario: true
 
     :CaseImportance: Critical
     """
     expected_message_lines = [
         'Are you sure you want to delete the manifest?',
-        'Note: Deleting a subscription manifest is STRONGLY discouraged. '
-        'Deleting a manifest will:',
-        'Delete all subscriptions that are attached to running hosts.',
-        'Delete all subscriptions attached to activation keys.',
-        'Disable Red Hat Insights.',
-        'Require you to upload the subscription-manifest and re-attach '
-        'subscriptions to hosts and activation keys.',
-        'This action should only be taken in extreme circumstances or for debugging purposes.',
+        'Note: Deleting a subscription manifest is STRONGLY discouraged.',
+        'This action should only be taken for debugging purposes.',
     ]
-    org = entities.Organization().create()
+    org = target_sat.api.Organization().create()
     _, temporary_local_manifest_path = mkstemp(prefix='manifest-', suffix='.zip')
-    with manifests.clone() as manifest:
-        with open(temporary_local_manifest_path, 'wb') as file_handler:
-            file_handler.write(manifest.content.read())
+    with clone() as manifest, open(temporary_local_manifest_path, 'wb') as file_handler:
+        file_handler.write(manifest.content.read())
     with session:
         session.organization.select(org.name)
         # Ignore "Danger alert: Katello::Errors::UpstreamConsumerNotFound'" as server will connect
@@ -118,14 +106,11 @@ def test_positive_end_to_end(session):
             ignore_error_messages=['Danger alert: Katello::Errors::UpstreamConsumerNotFound'],
         )
         assert session.subscription.has_manifest
-        # dashboard check
-        subscription_values = session.dashboard.read('SubscriptionStatus')['subscriptions']
-        assert subscription_values[0]['Subscription Status'] == 'Active Subscriptions'
-        assert int(subscription_values[0]['Count']) >= 1
-        assert subscription_values[1]['Subscription Status'] == 'Subscriptions Expiring in 120 Days'
-        assert int(subscription_values[1]['Count']) == 0
-        assert subscription_values[2]['Subscription Status'] == 'Recently Expired Subscriptions'
-        assert int(subscription_values[2]['Count']) == 0
+        subscriptions = session.subscription.read_subscriptions()
+        assert len(subscriptions) >= 1
+        assert any('Red Hat' in subscription['Name'] for subscription in subscriptions)
+        assert int(subscriptions[0]['Entitlements']) > 0
+        assert int(subscriptions[0]['Consumed']) >= 0
         # manifest delete testing
         delete_message = session.subscription.read_delete_manifest_message()
         assert ' '.join(expected_message_lines) == delete_message
@@ -134,10 +119,20 @@ def test_positive_end_to_end(session):
             ignore_error_messages=['Danger alert: Katello::Errors::UpstreamConsumerNotFound']
         )
         assert not session.subscription.has_manifest
+        # reimport manifest
+        session.subscription.add_manifest(
+            temporary_local_manifest_path,
+            ignore_error_messages=['Danger alert: Katello::Errors::UpstreamConsumerNotFound'],
+        )
+        assert session.subscription.has_manifest
+        results = target_sat.execute(
+            'grep -E "NullPointerException|CandlepinError" /var/log/candlepin/candlepin.log'
+        )
+        assert results.stdout == ''
 
 
 @pytest.mark.tier2
-def test_positive_access_with_non_admin_user_without_manifest(test_name):
+def test_positive_access_with_non_admin_user_without_manifest(test_name, target_sat):
     """Access subscription page with non admin user that has the necessary
     permissions to check that there is no manifest uploaded.
 
@@ -147,13 +142,11 @@ def test_positive_access_with_non_admin_user_without_manifest(test_name):
 
     :BZ: 1417082
 
-    :CaseLevel: Integration
-
     :CaseImportance: Critical
     """
-    org = entities.Organization().create()
-    role = entities.Role(organization=[org]).create()
-    create_role_permissions(
+    org = target_sat.api.Organization().create()
+    role = target_sat.api.Role(organization=[org]).create()
+    target_sat.api_factory.create_role_permissions(
         role,
         {
             'Katello::Subscription': [
@@ -166,20 +159,22 @@ def test_positive_access_with_non_admin_user_without_manifest(test_name):
         },
     )
     user_password = gen_string('alphanumeric')
-    user = entities.User(
+    user = target_sat.api.User(
         admin=False,
         role=[role],
         password=user_password,
         organization=[org],
         default_organization=org,
     ).create()
-    with Session(test_name, user=user.login, password=user_password) as session:
+    with target_sat.ui_session(test_name, user=user.login, password=user_password) as session:
         assert not session.subscription.has_manifest
 
 
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_access_with_non_admin_user_with_manifest(test_name):
+def test_positive_access_with_non_admin_user_with_manifest(
+    test_name, function_entitlement_manifest_org, target_sat
+):
     """Access subscription page with user that has only view_subscriptions and view organizations
     permission and organization that has a manifest uploaded.
 
@@ -192,26 +187,23 @@ def test_positive_access_with_non_admin_user_with_manifest(test_name):
 
     :customerscenario: true
 
-    :CaseLevel: Integration
-
     :CaseImportance: Critical
     """
-    org = entities.Organization().create()
-    manifests.upload_manifest_locked(org.id)
-    role = entities.Role(organization=[org]).create()
-    create_role_permissions(
+    org = function_entitlement_manifest_org
+    role = target_sat.api.Role(organization=[org]).create()
+    target_sat.api_factory.create_role_permissions(
         role,
         {'Katello::Subscription': ['view_subscriptions'], 'Organization': ['view_organizations']},
     )
     user_password = gen_string('alphanumeric')
-    user = entities.User(
+    user = target_sat.api.User(
         admin=False,
         role=[role],
         password=user_password,
         organization=[org],
         default_organization=org,
     ).create()
-    with Session(test_name, user=user.login, password=user_password) as session:
+    with target_sat.ui_session(test_name, user=user.login, password=user_password) as session:
         assert (
             session.subscription.search(f'name = "{DEFAULT_SUBSCRIPTION_NAME}"')[0]['Name']
             == DEFAULT_SUBSCRIPTION_NAME
@@ -219,7 +211,9 @@ def test_positive_access_with_non_admin_user_with_manifest(test_name):
 
 
 @pytest.mark.tier2
-def test_positive_access_manifest_as_another_admin_user(test_name):
+def test_positive_access_manifest_as_another_admin_user(
+    test_name, target_sat, function_entitlement_manifest
+):
     """Other admin users should be able to access and manage a manifest
     uploaded by a different admin.
 
@@ -231,27 +225,25 @@ def test_positive_access_manifest_as_another_admin_user(test_name):
 
     :customerscenario: true
 
-    :CaseLevel: Integration
-
     :CaseImportance: High
     """
-    org = entities.Organization().create()
+    org = target_sat.api.Organization().create()
     user1_password = gen_string('alphanumeric')
-    user1 = entities.User(
+    user1 = target_sat.api.User(
         admin=True, password=user1_password, organization=[org], default_organization=org
     ).create()
     user2_password = gen_string('alphanumeric')
-    user2 = entities.User(
+    user2 = target_sat.api.User(
         admin=True, password=user2_password, organization=[org], default_organization=org
     ).create()
     # use the first admin to upload a manifest
-    with Session(test_name, user=user1.login, password=user1_password) as session:
-        manifests.upload_manifest_locked(org.id)
+    with target_sat.ui_session(test_name, user=user1.login, password=user1_password) as session:
+        target_sat.upload_manifest(org.id, function_entitlement_manifest.content)
         assert session.subscription.has_manifest
         # store subscriptions that have "Red Hat" in the name for later
         rh_subs = session.subscription.search("Red Hat")
     # try to view and delete the manifest with another admin
-    with Session(test_name, user=user2.login, password=user2_password) as session:
+    with target_sat.ui_session(test_name, user=user2.login, password=user2_password) as session:
         assert session.subscription.has_manifest
         assert rh_subs == session.subscription.search("Red Hat")
         session.subscription.delete_manifest(
@@ -261,7 +253,9 @@ def test_positive_access_manifest_as_another_admin_user(test_name):
 
 
 @pytest.mark.tier3
-def test_positive_view_vdc_subscription_products(session, rhel7_contenthost, target_sat):
+def test_positive_view_vdc_subscription_products(
+    session, rhel7_contenthost, target_sat, function_entitlement_manifest_org
+):
     """Ensure that Virtual Datacenters subscription provided products is
     not empty and that a consumed product exist in content products.
 
@@ -291,24 +285,19 @@ def test_positive_view_vdc_subscription_products(session, rhel7_contenthost, tar
     :BZ: 1366327
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
-    org = entities.Organization().create()
-    lce = entities.LifecycleEnvironment(organization=org).create()
+    org = function_entitlement_manifest_org
+    lce = target_sat.api.LifecycleEnvironment(organization=org).create()
     repos_collection = target_sat.cli_factory.RepositoryCollection(
-        distro=DISTRO_RHEL7,
+        distro='rhel7',
         repositories=[target_sat.cli_factory.RHELAnsibleEngineRepository(cdn=True)],
     )
     product_name = repos_collection.rh_repos[0].data['product']
-    repos_collection.setup_content(
-        org.id, lce.id, upload_manifest=True, rh_subscriptions=[DEFAULT_SUBSCRIPTION_NAME]
-    )
+    repos_collection.setup_content(org.id, lce.id, rh_subscriptions=[DEFAULT_SUBSCRIPTION_NAME])
     rhel7_contenthost.contenthost_setup(
         target_sat,
         org.label,
         activation_key=repos_collection.setup_content_data['activation_key']['name'],
-        install_katello_agent=False,
     )
     with session:
         session.organization.select(org.name)
@@ -325,7 +314,9 @@ def test_positive_view_vdc_subscription_products(session, rhel7_contenthost, tar
 
 @pytest.mark.skip_if_not_set('libvirt')
 @pytest.mark.tier3
-def test_positive_view_vdc_guest_subscription_products(session, rhel7_contenthost, target_sat):
+def test_positive_view_vdc_guest_subscription_products(
+    session, rhel7_contenthost, target_sat, function_entitlement_manifest_org
+):
     """Ensure that Virtual Data Centers guest subscription Provided
     Products and Content Products are not empty.
 
@@ -352,16 +343,14 @@ def test_positive_view_vdc_guest_subscription_products(session, rhel7_contenthos
     :BZ: 1395788, 1506636, 1487317
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
-    org = entities.Organization().create()
-    lce = entities.LifecycleEnvironment(organization=org).create()
+    org = function_entitlement_manifest_org
+    lce = target_sat.api.LifecycleEnvironment(organization=org).create()
     provisioning_server = settings.libvirt.libvirt_hostname
     rh_product_repository = target_sat.cli_factory.RHELAnsibleEngineRepository(cdn=True)
     product_name = rh_product_repository.data['product']
     # Create a new virt-who config
-    virt_who_config = make_virt_who_config(
+    virt_who_config = target_sat.cli_factory.virt_who_config(
         {
             'organization-id': org.id,
             'hypervisor-type': VIRT_WHO_HYPERVISOR_TYPES['libvirt'],
@@ -378,6 +367,7 @@ def test_positive_view_vdc_guest_subscription_products(session, rhel7_contenthos
         hypervisor_hostname=provisioning_server,
         configure_ssh=True,
         subscription_name=VDC_SUBSCRIPTION_NAME,
+        upload_manifest=False,
         extra_repos=[rh_product_repository.data],
     )
     virt_who_hypervisor_host = virt_who_data['virt_who_hypervisor_host']
@@ -388,7 +378,8 @@ def test_positive_view_vdc_guest_subscription_products(session, rhel7_contenthos
             f'subscription_name = "{VDC_SUBSCRIPTION_NAME}" '
             f'and name = "{virt_who_hypervisor_host["name"]}"'
         )
-        assert content_hosts and content_hosts[0]['Name'] == virt_who_hypervisor_host['name']
+        assert content_hosts
+        assert content_hosts[0]['Name'] == virt_who_hypervisor_host['name']
         # ensure that hypervisor guests subscription provided products list is not empty and
         # that the product is in provided products.
         provided_products = session.subscription.provided_products(
@@ -404,7 +395,9 @@ def test_positive_view_vdc_guest_subscription_products(session, rhel7_contenthos
 
 
 @pytest.mark.tier3
-def test_select_customizable_columns_uncheck_and_checks_all_checkboxes(session):
+def test_select_customizable_columns_uncheck_and_checks_all_checkboxes(
+    session, function_org, function_entitlement_manifest
+):
     """Ensures that no column headers from checkboxes show up in the table after
     unticking everything from selectable customizable column
 
@@ -438,28 +431,20 @@ def test_select_customizable_columns_uncheck_and_checks_all_checkboxes(session):
         'Consumed': False,
         'Entitlements': False,
     }
-    org = entities.Organization().create()
-    _, temporary_local_manifest_path = mkstemp(prefix='manifest-', suffix='.zip')
-    with manifests.clone() as manifest:
-        with open(temporary_local_manifest_path, 'wb') as file_handler:
-            file_handler.write(manifest.content.read())
-
+    org = function_org
     with session:
         session.organization.select(org.name)
-        # Ignore "Danger alert: Katello::Errors::UpstreamConsumerNotFound" as server will connect
-        # to upstream subscription service to verify
-        # the consumer uuid, that will be displayed in flash error messages
-        # Note: this happen only when using clone manifest.
         session.subscription.add_manifest(
-            temporary_local_manifest_path,
+            function_entitlement_manifest.path,
             ignore_error_messages=['Danger alert: Katello::Errors::UpstreamConsumerNotFound'],
         )
         headers = session.subscription.filter_columns(checkbox_dict)
-        assert not headers
+        assert headers == ('Select all rows',)
         assert len(checkbox_dict) == 9
         time.sleep(3)
         checkbox_dict.update((k, True) for k in checkbox_dict)
         col = session.subscription.filter_columns(checkbox_dict)
+        checkbox_dict.update({'Select all rows': ''})
         assert set(col) == set(checkbox_dict)
 
 
@@ -495,7 +480,9 @@ def test_positive_subscription_status_disabled_golden_ticket(
 
 
 @pytest.mark.tier2
-def test_positive_candlepin_events_processed_by_STOMP(session, rhel7_contenthost, target_sat):
+def test_positive_candlepin_events_processed_by_STOMP(
+    session, rhel7_contenthost, target_sat, function_entitlement_manifest_org
+):
     """Verify that Candlepin events are being read and processed by
        attaching subscriptions, validating host subscriptions status,
        and viewing processed and failed Candlepin events
@@ -520,14 +507,16 @@ def test_positive_candlepin_events_processed_by_STOMP(session, rhel7_contenthost
 
     :CaseImportance: High
     """
-    org = entities.Organization().create()
-    repo = entities.Repository(product=entities.Product(organization=org).create()).create()
+    org = function_entitlement_manifest_org
+    repo = target_sat.api.Repository(
+        product=target_sat.api.Product(organization=org).create()
+    ).create()
     repo.sync()
-    ak = entities.ActivationKey(
+    ak = target_sat.api.ActivationKey(
         content_view=org.default_content_view,
         max_hosts=100,
         organization=org,
-        environment=entities.LifecycleEnvironment(id=org.library.id),
+        environment=target_sat.api.LifecycleEnvironment(id=org.library.id),
     ).create()
     rhel7_contenthost.install_katello_ca(target_sat)
     rhel7_contenthost.register_contenthost(org.name, ak.name)
@@ -537,14 +526,30 @@ def test_positive_candlepin_events_processed_by_STOMP(session, rhel7_contenthost
             'details'
         ]
         assert 'Unentitled' in host['subscription_status']
-        with manifests.clone() as manifest:
-            upload_manifest(org.id, manifest.content)
         session.contenthost.add_subscription(rhel7_contenthost.hostname, DEFAULT_SUBSCRIPTION_NAME)
         session.browser.refresh()
         updated_sub_status = session.contenthost.read(
             rhel7_contenthost.hostname, widget_names='details'
         )['details']['subscription_status']
         assert 'Fully entitled' in updated_sub_status
-        response = entities.Ping().search_json()['services']['candlepin_events']
+        response = target_sat.api.Ping().search_json()['services']['candlepin_events']
         assert response['status'] == 'ok'
         assert '0 Failed' in response['message']
+
+
+def test_positive_prepare_for_sca_only_subscription(target_sat, function_entitlement_manifest_org):
+    """Verify that the Subcsription page notifies users that Simple Content Access
+        will be required for all organizations in Satellite 6.16
+
+    :id: cb6fdfdd-04ee-4acb-9460-c78556cef11e
+
+    :expectedresults: The Subscription page notifies users that Simple Content Access will
+        be required for all organizations in Satellite 6.16
+    """
+    with target_sat.ui_session() as session:
+        session.organization.select(function_entitlement_manifest_org.name)
+        sca_alert = session.subscription.sca_alert()
+        assert (
+            'This organization is not using Simple Content Access. Entitlement-based subscription '
+            'management is deprecated and will be removed in Satellite 6.16.' in sca_alert
+        )

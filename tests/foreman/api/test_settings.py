@@ -4,28 +4,24 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: Settings
 
-:Assignee: shwsingh
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import random
 
 import pytest
-from nailgun import entities
 from requests.exceptions import HTTPError
 
-from robottelo.datafactory import filtered_datapoint
-from robottelo.datafactory import generate_strings_list
-from robottelo.datafactory import parametrized
-from robottelo.datafactory import valid_data_list
+from robottelo.utils.datafactory import (
+    filtered_datapoint,
+    generate_strings_list,
+    parametrized,
+    valid_data_list,
+)
 
 
 @filtered_datapoint
@@ -49,7 +45,6 @@ def test_positive_update_login_page_footer_text(setting_update):
     :parametrized: yes
 
     :expectedresults: Parameter is updated successfully
-
     """
     login_text_value = random.choice(list(valid_data_list().values()))
     setting_update.value = login_text_value
@@ -68,7 +63,6 @@ def test_positive_update_login_page_footer_text_without_value(setting_update):
     :parametrized: yes
 
     :expectedresults: login_text has empty value after update
-
     """
     setting_update.value = ""
     setting_update = setting_update.update({'value'})
@@ -87,7 +81,6 @@ def test_positive_update_login_page_footer_text_with_long_string(setting_update)
     :parametrized: yes
 
     :expectedresults: Parameter is updated
-
     """
     login_text_value = random.choice(list(generate_strings_list(1000)))
     setting_update.value = login_text_value
@@ -125,7 +118,6 @@ def test_positive_update_hostname_prefix_without_value(setting_update):
     :BZ: 1911228
 
     :expectedresults: Error should be raised on setting empty value for discovery_prefix setting
-
     """
     setting_update.value = ""
     with pytest.raises(HTTPError):
@@ -186,12 +178,12 @@ def test_negative_discover_host_with_invalid_prefix():
 @pytest.mark.tier2
 @pytest.mark.parametrize('download_policy', ["immediate", "on_demand"])
 @pytest.mark.parametrize('setting_update', ['default_download_policy'], indirect=True)
-def test_positive_custom_repo_download_policy(setting_update, download_policy):
+def test_positive_custom_repo_download_policy(setting_update, download_policy, target_sat):
     """Check the set custom repository download policy for newly created custom repository.
 
     :id: d5150cce-ba85-4ea0-a8d1-6a54d0d29571
 
-    :Steps:
+    :steps:
         1. Create a product, Organization
         2. Update the Default Custom Repository download policy in the setting.
         3. Create a custom repo under the created organization.
@@ -204,14 +196,12 @@ def test_positive_custom_repo_download_policy(setting_update, download_policy):
      repository.
 
     :CaseImportance: Medium
-
-    :CaseLevel: Acceptance
     """
-    org = entities.Organization().create()
-    prod = entities.Product(organization=org).create()
+    org = target_sat.api.Organization().create()
+    prod = target_sat.api.Product(organization=org).create()
     setting_update.value = download_policy
     setting_update.update({'value'})
-    repo = entities.Repository(product=prod, content_type='yum', organization=org).create()
+    repo = target_sat.api.Repository(product=prod, content_type='yum', organization=org).create()
     assert repo.download_policy == download_policy
     repo.delete()
     prod.delete()

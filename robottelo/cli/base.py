@@ -6,57 +6,9 @@ from wait_for import wait_for
 from robottelo import ssh
 from robottelo.cli import hammer
 from robottelo.config import settings
+from robottelo.exceptions import CLIDataBaseError, CLIError, CLIReturnCodeError
 from robottelo.logging import logger
-from robottelo.ssh import get_client
-
-
-class CLIError(Exception):
-    """Indicates that a CLI command could not be run."""
-
-
-class CLIBaseError(Exception):
-    """Indicates that a CLI command has finished with return code different
-    from zero.
-
-    :param status: CLI command return code
-    :param stderr: contents of the ``stderr``
-    :param msg: explanation of the error
-
-    """
-
-    def __init__(self, status, stderr, msg):
-        self.status = status
-        self.stderr = stderr
-        self.msg = msg
-        super().__init__(msg)
-        self.message = msg
-
-    def __str__(self):
-        """Include class name, status, stderr and msg to string repr so
-        assertRaisesRegexp can be used to assert error present on any
-        attribute
-        """
-        return repr(self)
-
-    def __repr__(self):
-        """Include class name status, stderr and msg to improve logging"""
-        return '{}(status={!r}, stderr={!r}, msg={!r}'.format(
-            type(self).__name__, self.status, self.stderr, self.msg
-        )
-
-
-class CLIReturnCodeError(CLIBaseError):
-    """Error to be raised when an error occurs due to some validation error
-    when execution hammer cli.
-    See: https://github.com/SatelliteQE/robottelo/issues/3790 for more details
-    """
-
-
-class CLIDataBaseError(CLIBaseError):
-    """Error to be raised when an error occurs due to some missing parameter
-    which cause a data base error on hammer
-    See: https://github.com/SatelliteQE/robottelo/issues/3790 for more details
-    """
+from robottelo.utils.ssh import get_client
 
 
 class Base:
@@ -65,6 +17,7 @@ class Base:
     See Subcommands section in `hammer --help` output on your Satellite.
     """
 
+    omitting_credentials = False
     command_base = None  # each inherited instance should define this
     command_sub = None  # specific to instance, like: create, update, etc.
     command_end = None  # extending commands like for directory to pass
@@ -79,11 +32,11 @@ class Base:
 
         Check for a non-zero return code or any stderr contents.
 
-        :param response: a result object, returned by :mod:`robottelo.ssh.command`.
+        :param response: a result object, returned by :mod:`robottelo.utils.ssh.command`.
         :param ignore_stderr: indicates whether to throw a warning in logs if
             ``stderr`` is not empty.
         :returns: contents of ``stdout``.
-        :raises robottelo.cli.base.CLIReturnCodeError: If return code is
+        :raises robottelo.exceptions.CLIReturnCodeError: If return code is
             different from zero.
         """
         if isinstance(response.stderr, tuple):
@@ -115,6 +68,16 @@ class Base:
         """
 
         cls.command_sub = 'add-operatingsystem'
+
+        return cls.execute(cls._construct_command(options))
+
+    @classmethod
+    def ping(cls, options=None):
+        """
+        Display status of Satellite.
+        """
+
+        cls.command_sub = 'ping'
 
         return cls.execute(cls._construct_command(options))
 
@@ -169,28 +132,24 @@ class Base:
         return cls.execute(cls._construct_command(options), ignore_stderr=True, timeout=timeout)
 
     @classmethod
-    def delete_parameter(cls, options=None):
+    def delete_parameter(cls, options=None, timeout=None):
         """
         Deletes parameter from record.
         """
 
         cls.command_sub = 'delete-parameter'
 
-        result = cls.execute(cls._construct_command(options))
-
-        return result
+        return cls.execute(cls._construct_command(options), ignore_stderr=False, timeout=timeout)
 
     @classmethod
-    def dump(cls, options=None):
+    def dump(cls, options=None, timeout=None):
         """
         Displays the content for existing partition table.
         """
 
         cls.command_sub = 'dump'
 
-        result = cls.execute(cls._construct_command(options))
-
-        return result
+        return cls.execute(cls._construct_command(options), ignore_stderr=False, timeout=timeout)
 
     @classmethod
     def _get_username_password(cls, username=None, password=None):
@@ -206,15 +165,9 @@ class Base:
 
         """
         if username is None:
-            try:
-                username = getattr(cls, 'foreman_admin_username')
-            except AttributeError:
-                username = settings.server.admin_username
+            username = getattr(cls, 'foreman_admin_username', settings.server.admin_username)
         if password is None:
-            try:
-                password = getattr(cls, 'foreman_admin_password')
-            except AttributeError:
-                password = settings.server.admin_password
+            password = getattr(cls, 'foreman_admin_password', settings.server.admin_password)
 
         return (username, password)
 
@@ -231,7 +184,10 @@ class Base:
         return_raw_response=None,
     ):
         """Executes the cli ``command`` on the server via ssh"""
-        user, password = cls._get_username_password(user, password)
+        if cls.omitting_credentials:
+            user, password = None, None
+        else:
+            user, password = cls._get_username_password(user, password)
         time_hammer = settings.performance.time_hammer
 
         # add time to measure hammer performance
@@ -251,20 +207,14 @@ class Base:
         )
         if return_raw_response:
             return response
-        else:
-            return cls._handle_response(response, ignore_stderr=ignore_stderr)
+        return cls._handle_response(response, ignore_stderr=ignore_stderr)
 
     @classmethod
-    def sm_execute(
-        cls,
-        command,
-        hostname=None,
-        timeout=None,
-    ):
+    def sm_execute(cls, command, hostname=None, timeout=None, **kwargs):
         """Executes the satellite-maintain cli commands on the server via ssh"""
+        env_var = kwargs.get('env_var') or ''
         client = get_client(hostname=hostname or cls.hostname)
-        result = client.execute(f'satellite-maintain {command}', timeout=timeout)
-        return result
+        return client.execute(f'{env_var} satellite-maintain {command}', timeout=timeout)
 
     @classmethod
     def exists(cls, options=None, search=None):
@@ -419,6 +369,4 @@ class Base:
                 if isinstance(val, list):
                     val = ','.join(str(el) for el in val)
                 tail += f' --{key}="{val}"'
-        cmd = f"{cls.command_base} {cls.command_sub or ''} {tail.strip()} {cls.command_end or ''}"
-
-        return cmd
+        return f"{cls.command_base or ''} {cls.command_sub or ''} {tail.strip()} {cls.command_end or ''}"

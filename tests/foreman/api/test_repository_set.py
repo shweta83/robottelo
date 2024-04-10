@@ -7,25 +7,16 @@ https://theforeman.org/plugins/katello/3.16/api/apidoc/v2/repository_sets.html
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: Repositories
 
-:Assignee: chiggins
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
-from nailgun import entities
 
-from robottelo import manifests
-from robottelo.api.utils import upload_manifest
-from robottelo.constants import PRDS
-from robottelo.constants import REPOSET
+from robottelo.constants import PRDS, REPOSET
 
 pytestmark = [pytest.mark.run_in_one_thread, pytest.mark.tier1]
 
@@ -36,29 +27,17 @@ RELEASE = '6Server'
 
 
 @pytest.fixture
-def org():
-    """Create organization."""
-    return entities.Organization().create()
-
-
-@pytest.fixture
-def manifest_org(org):
-    """Upload manifest to organization."""
-    with manifests.clone() as manifest:
-        upload_manifest(org.id, manifest.content)
-    return org
-
-
-@pytest.fixture
-def product(manifest_org):
+def product(function_entitlement_manifest_org, module_target_sat):
     """Find and return the product matching PRODUCT_NAME."""
-    return entities.Product(name=PRODUCT_NAME, organization=manifest_org).search()[0]
+    return module_target_sat.api.Product(
+        name=PRODUCT_NAME, organization=function_entitlement_manifest_org
+    ).search()[0]
 
 
 @pytest.fixture
-def reposet(product):
+def reposet(product, module_target_sat):
     """Find and return the repository set matching REPOSET_NAME and product."""
-    return entities.RepositorySet(name=REPOSET_NAME, product=product).search()[0]
+    return module_target_sat.api.RepositorySet(name=REPOSET_NAME, product=product).search()[0]
 
 
 @pytest.fixture

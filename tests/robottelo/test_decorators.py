@@ -1,17 +1,17 @@
-"""Unit tests for :mod:`robottelo.decorators`."""
+"""Unit tests for :mod:`robottelo.utils.decorators`."""
 from unittest import mock
 
 import pytest
 
-from robottelo import decorators
+from robottelo.utils import decorators
 
 
 class TestCacheable:
-    """Tests for :func:`robottelo.decorators.cacheable`."""
+    """Tests for :func:`robottelo.utils.decorators.cacheable`."""
 
-    @pytest.fixture(scope="function")
+    @pytest.fixture
     def make_foo(self):
-        mocked_object_cache_patcher = mock.patch.dict('robottelo.decorators.OBJECT_CACHE')
+        mocked_object_cache_patcher = mock.patch.dict('robottelo.utils.decorators.OBJECT_CACHE')
         mocked_object_cache_patcher.start()
 
         # decorators.cacheable uses the function name as the key, removing make_
@@ -28,12 +28,12 @@ class TestCacheable:
         """
         make_foo(cached=False)
         assert 'foo' not in decorators.OBJECT_CACHE
-        assert decorators.OBJECT_CACHE == {}
+        assert {} == decorators.OBJECT_CACHE
 
     def test_build_cache(self, make_foo):
         """Create a new object and add it to the cache."""
         obj = make_foo(cached=True)
-        assert decorators.OBJECT_CACHE == {'foo': {'id': 42}}
+        assert {'foo': {'id': 42}} == decorators.OBJECT_CACHE
         assert id(decorators.OBJECT_CACHE['foo']) == id(obj)
 
     def test_return_from_cache(self, make_foo):

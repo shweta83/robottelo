@@ -4,17 +4,12 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Puppet
 
-:Assignee: vsedmik
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
 

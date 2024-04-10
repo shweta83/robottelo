@@ -4,38 +4,27 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: LifecycleEnvironments
 
-:Assignee: ltran
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import pytest
-from airgun.session import Session
-from nailgun import entities
 from navmazing import NavigationTriesExceeded
+import pytest
 
-from robottelo.api.utils import create_role_permissions
 from robottelo.config import settings
-from robottelo.constants import ENVIRONMENT
-from robottelo.constants import FAKE_0_CUSTOM_PACKAGE
-from robottelo.constants import FAKE_0_CUSTOM_PACKAGE_NAME
-from robottelo.constants import FAKE_1_CUSTOM_PACKAGE
-from robottelo.constants import FAKE_1_CUSTOM_PACKAGE_NAME
-from robottelo.constants import FAKE_2_CUSTOM_PACKAGE
-from robottelo.constants import FAKE_3_CUSTOM_PACKAGE_NAME
-from robottelo.datafactory import gen_string
-
-
-@pytest.fixture(scope='module')
-def module_org():
-    return entities.Organization().create()
+from robottelo.constants import (
+    ENVIRONMENT,
+    FAKE_0_CUSTOM_PACKAGE,
+    FAKE_0_CUSTOM_PACKAGE_NAME,
+    FAKE_1_CUSTOM_PACKAGE,
+    FAKE_1_CUSTOM_PACKAGE_NAME,
+    FAKE_2_CUSTOM_PACKAGE,
+    FAKE_3_CUSTOM_PACKAGE_NAME,
+)
+from robottelo.utils.datafactory import gen_string
 
 
 @pytest.mark.upgrade
@@ -46,8 +35,6 @@ def test_positive_end_to_end(session):
     :id: b2293de9-7a71-462e-b988-321b07c01642
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """
@@ -84,8 +71,6 @@ def test_positive_create_chain(session):
     :id: ed3d2c88-ef0a-4a1a-9f11-5bdb2119fc18
 
     :expectedresults: Environment is created
-
-    :CaseLevel: Integration
     """
     lce_path_name = gen_string('alpha')
     lce_name = gen_string('alpha')
@@ -101,7 +86,7 @@ def test_positive_create_chain(session):
 
 @pytest.mark.tier3
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_search_lce_content_view_packages_by_full_name(session, module_org):
+def test_positive_search_lce_content_view_packages_by_full_name(session, module_org, target_sat):
     """Search Lifecycle Environment content view packages by full name
 
     Note: if package full name looks like "bear-4.1-1.noarch",
@@ -125,8 +110,6 @@ def test_positive_search_lce_content_view_packages_by_full_name(session, module_
     :expectedresults: only the searched packages where found
 
     :BZ: 1432155
-
-    :CaseLevel: System
     """
     packages = [
         {'name': FAKE_0_CUSTOM_PACKAGE_NAME, 'full_names': [FAKE_0_CUSTOM_PACKAGE]},
@@ -135,10 +118,12 @@ def test_positive_search_lce_content_view_packages_by_full_name(session, module_
             'full_names': [FAKE_1_CUSTOM_PACKAGE, FAKE_2_CUSTOM_PACKAGE],
         },
     ]
-    product = entities.Product(organization=module_org).create()
-    repository = entities.Repository(product=product, url=settings.repos.yum_0.url).create()
+    product = target_sat.api.Product(organization=module_org).create()
+    repository = target_sat.api.Repository(product=product, url=settings.repos.yum_0.url).create()
     repository.sync()
-    content_view = entities.ContentView(organization=module_org, repository=[repository]).create()
+    content_view = target_sat.api.ContentView(
+        organization=module_org, repository=[repository]
+    ).create()
     content_view.publish()
     with session:
         for package in packages:
@@ -152,7 +137,7 @@ def test_positive_search_lce_content_view_packages_by_full_name(session, module_
 
 @pytest.mark.tier3
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_search_lce_content_view_packages_by_name(session, module_org):
+def test_positive_search_lce_content_view_packages_by_name(session, module_org, target_sat):
     """Search Lifecycle Environment content view packages by name
 
     Note: if package full name looks like "bear-4.1-1.noarch",
@@ -176,17 +161,17 @@ def test_positive_search_lce_content_view_packages_by_name(session, module_org):
     :expectedresults: only the searched packages where found
 
     :BZ: 1432155
-
-    :CaseLevel: System
     """
     packages = [
         {'name': FAKE_0_CUSTOM_PACKAGE_NAME, 'packages_count': 1},
         {'name': FAKE_1_CUSTOM_PACKAGE_NAME, 'packages_count': 2},
     ]
-    product = entities.Product(organization=module_org).create()
-    repository = entities.Repository(product=product, url=settings.repos.yum_0.url).create()
+    product = target_sat.api.Product(organization=module_org).create()
+    repository = target_sat.api.Repository(product=product, url=settings.repos.yum_0.url).create()
     repository.sync()
-    content_view = entities.ContentView(organization=module_org, repository=[repository]).create()
+    content_view = target_sat.api.ContentView(
+        organization=module_org, repository=[repository]
+    ).create()
     content_view.publish()
     with session:
         for package in packages:
@@ -200,7 +185,7 @@ def test_positive_search_lce_content_view_packages_by_name(session, module_org):
 
 @pytest.mark.tier3
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_search_lce_content_view_module_streams_by_name(session, module_org):
+def test_positive_search_lce_content_view_module_streams_by_name(session, module_org, target_sat):
     """Search Lifecycle Environment content view module streams by name
 
     :id: e67893b2-a56e-4eac-87e6-63be897ba912
@@ -219,19 +204,19 @@ def test_positive_search_lce_content_view_module_streams_by_name(session, module
         5. Search by module stream names
 
     :expectedresults: only the searched module streams where found
-
-    :CaseLevel: System
     """
     module_streams = [
         {'name': FAKE_1_CUSTOM_PACKAGE_NAME, 'streams_count': 2},
         {'name': FAKE_3_CUSTOM_PACKAGE_NAME, 'streams_count': 3},
     ]
-    product = entities.Product(organization=module_org).create()
-    repository = entities.Repository(
+    product = target_sat.api.Product(organization=module_org).create()
+    repository = target_sat.api.Repository(
         product=product, url=settings.repos.module_stream_1.url
     ).create()
     repository.sync()
-    content_view = entities.ContentView(organization=module_org, repository=[repository]).create()
+    content_view = target_sat.api.ContentView(
+        organization=module_org, repository=[repository]
+    ).create()
     content_view.publish()
     with session:
         for module in module_streams:
@@ -245,7 +230,7 @@ def test_positive_search_lce_content_view_module_streams_by_name(session, module
 
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_custom_user_view_lce(session, test_name):
+def test_positive_custom_user_view_lce(session, test_name, target_sat):
     """As a custom user attempt to view a lifecycle environment created
     by admin user
 
@@ -253,7 +238,7 @@ def test_positive_custom_user_view_lce(session, test_name):
 
     :BZ: 1420511
 
-    :Steps:
+    :steps:
 
         As an admin user:
 
@@ -280,15 +265,13 @@ def test_positive_custom_user_view_lce(session, test_name):
 
     :expectedresults: The additional lifecycle environment is viewable and
         accessible by the custom user.
-
-    :CaseLevel: Integration
     """
     role_name = gen_string('alpha')
     lce_name = gen_string('alpha')
     user_login = gen_string('alpha')
     user_password = gen_string('alpha')
-    org = entities.Organization().create()
-    role = entities.Role(name=role_name).create()
+    org = target_sat.api.Organization().create()
+    role = target_sat.api.Role(name=role_name).create()
     permissions_types_names = {
         None: ['access_dashboard'],
         'Organization': ['view_organizations'],
@@ -299,8 +282,8 @@ def test_positive_custom_user_view_lce(session, test_name):
             'promote_or_remove_content_views_to_environments',
         ],
     }
-    create_role_permissions(role, permissions_types_names)
-    entities.User(
+    target_sat.api_factory.create_role_permissions(role, permissions_types_names)
+    target_sat.api.User(
         default_organization=org,
         organization=[org],
         role=[role],
@@ -314,7 +297,7 @@ def test_positive_custom_user_view_lce(session, test_name):
         lce_values = session.lifecycleenvironment.read_all()
         assert lce_name in lce_values['lce']
     # ensure the created user also can find the created lifecycle environment link
-    with Session(test_name, user_login, user_password) as non_admin_session:
+    with target_sat.ui_session(test_name, user_login, user_password) as non_admin_session:
         # to ensure that the created user has only the assigned
         # permissions, check that hosts menu tab does not exist
         with pytest.raises(NavigationTriesExceeded):

@@ -4,24 +4,19 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: System
+:CaseComponent: Installation
 
-:CaseComponent: satellite-change-hostname
-
-:Assignee: pondrejk
-
-:TestType: Functional
+:Team: Platform
 
 :CaseImportance: High
 
-:Upstream: No
-
 """
-import pytest
 from fauxfactory import gen_string
+import pytest
 
 from robottelo.cli import hammer
 from robottelo.config import settings
+from robottelo.constants import SATELLITE_ANSWER_FILE
 
 BCK_MSG = "**** Hostname change complete! ****"
 BAD_HN_MSG = (
@@ -32,6 +27,7 @@ BAD_CREDS_MSG = "Unable to authenticate user admin"
 pytestmark = pytest.mark.destructive
 
 
+@pytest.mark.e2e
 def test_positive_rename_satellite(module_org, module_product, module_target_sat):
     """run katello-change-hostname on Satellite server
 
@@ -103,8 +99,7 @@ def test_positive_rename_satellite(module_org, module_product, module_target_sat
     assert result.status == 0
     assert new_hostname in hammer.parse_json(result.stdout)['path']
     # check answer file for instances of old hostname
-    ans_f = '/etc/foreman-installer/scenarios.d/satellite-answers.yaml'
-    result = module_target_sat.execute(f'grep " {old_hostname}" {ans_f}')
+    result = module_target_sat.execute(f'grep " {old_hostname}" {SATELLITE_ANSWER_FILE}')
     assert result.status == 1, 'old hostname was not correctly replaced in answers.yml'
 
     # check repository published at path
@@ -117,7 +112,7 @@ def test_positive_rename_satellite(module_org, module_product, module_target_sat
     ), 'repository published path not updated correctly'
 
     # check for any other occurences of old hostname
-    result = module_target_sat.execute(f'grep " {old_hostname}" /etc/* -r')
+    result = module_target_sat.execute(f'grep " {old_hostname}" --exclude-dir="promtail" /etc/* -r')
     assert result.status != 0, 'there are remaining instances of the old hostname'
 
     repo.sync()

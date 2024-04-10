@@ -4,34 +4,27 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Integration
-
 :CaseComponent: TemplatesPlugin
 
-:Assignee: ogajduse
+:Team: Endeavour
 
-:TestType: Functional
-
-:Upstream: No
 """
+from fauxfactory import gen_string
 import pytest
 import requests
-from fauxfactory import gen_string
-from nailgun import entities
 
 from robottelo.config import settings
-from robottelo.constants import FOREMAN_TEMPLATE_IMPORT_URL
-from robottelo.constants import FOREMAN_TEMPLATE_ROOT_DIR
+from robottelo.constants import FOREMAN_TEMPLATE_IMPORT_URL, FOREMAN_TEMPLATE_ROOT_DIR
 
 
 @pytest.fixture(scope='module')
-def templates_org():
-    return entities.Organization().create()
+def templates_org(module_target_sat):
+    return module_target_sat.api.Organization().create()
 
 
 @pytest.fixture(scope='module')
-def templates_loc(templates_org):
-    return entities.Location(organization=[templates_org]).create()
+def templates_loc(templates_org, module_target_sat):
+    return module_target_sat.api.Location(organization=[templates_org]).create()
 
 
 git = settings.git
@@ -46,7 +39,7 @@ def test_positive_import_templates(session, templates_org, templates_loc):
 
     :bz: 1778181, 1778139
 
-    :Steps:
+    :steps:
 
         1. Navigate to Host -> Sync Templates, and choose Import.
         2. Select fields:
@@ -103,7 +96,7 @@ def test_positive_export_templates(session, create_import_export_local_dir, targ
 
     :bz: 1778139
 
-    :Steps:
+    :steps:
 
         1. Navigate to Host -> Sync Templates, and choose Export.
         2. Select fields:
@@ -164,13 +157,13 @@ def test_positive_export_filtered_templates_to_git(session, git_repository, git_
 
     :id: e4de338a-9ab9-492e-ac42-6cc2ebcd1792
 
-    :Steps:
+    :steps:
         1. Export only the templates matching with regex e.g: `^atomic.*` to git repo.
 
     :expectedresults:
         1. Assert matching templates are exported to git repo.
 
-    :BZ: 1785613
+    :BZ: 1785613, 2013759
 
     :parametrized: yes
 
@@ -189,7 +182,10 @@ def test_positive_export_filtered_templates_to_git(session, git_repository, git_
                 'template.dirname': dirname,
             }
         )
-        assert export_title == f'Export to {url} and branch {git_branch} as user {session._user}'
+        assert (
+            export_title == f'Export to {url.replace(git.password, "*****")} '
+            f'and branch {git_branch} as user {session._user}'
+        )
         path = f"{dirname}/provisioning_templates/provision"
         auth = (git.username, git.password)
         api_url = f"http://{git.hostname}:{git.http_port}/api/v1/repos/{git.username}"

@@ -4,45 +4,25 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Repositories
 
-:Assignee: chiggins
-
-:TestType: Functional
+:Team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import os
-
 import pytest
-from fabric.api import execute
-from fabric.api import run
-from upgrade.helpers.docker import docker_execute_command
-from upgrade_tests.helpers.scenarios import create_dict
-from upgrade_tests.helpers.scenarios import dockerize
-from upgrade_tests.helpers.scenarios import get_entity_data
-from upgrade_tests.helpers.scenarios import rpm1
-from upgrade_tests.helpers.scenarios import rpm2
 
-from robottelo.api.utils import create_sync_custom_repo
-from robottelo.api.utils import promote
 from robottelo.config import settings
-from robottelo.logging import logger
-from robottelo.upgrade_utility import create_repo
-from robottelo.upgrade_utility import host_location_update
-from robottelo.upgrade_utility import install_or_update_package
-from robottelo.upgrade_utility import publish_content_view
-
+from robottelo.constants import (
+    DEFAULT_ARCHITECTURE,
+    FAKE_0_CUSTOM_PACKAGE_NAME,
+    FAKE_4_CUSTOM_PACKAGE_NAME,
+    REPOS,
+)
+from robottelo.hosts import ContentHost
 
 UPSTREAM_USERNAME = 'rTtest123'
-DOCKER_VM = settings.upgrade.docker_vm
-FILE_PATH = '/var/www/html/pub/custom_repo/'
-_, RPM1_NAME = os.path.split(rpm1)
-_, RPM2_NAME = os.path.split(rpm2)
 
 
 class TestScenarioRepositoryUpstreamAuthorizationCheck:
@@ -58,7 +38,7 @@ class TestScenarioRepositoryUpstreamAuthorizationCheck:
     """
 
     @pytest.mark.pre_upgrade
-    def test_pre_repository_scenario_upstream_authorization(self, target_sat):
+    def test_pre_repository_scenario_upstream_authorization(self, target_sat, save_test_data):
         """Create a custom repository and set the upstream username on it.
 
         :id: preupgrade-11c5ceee-bfe0-4ce9-8f7b-67a835baf522
@@ -76,18 +56,19 @@ class TestScenarioRepositoryUpstreamAuthorizationCheck:
         """
 
         org = target_sat.api.Organization().create()
-        custom_repo = create_sync_custom_repo(org_id=org.id)
+        custom_repo = target_sat.api_factory.create_sync_custom_repo(org_id=org.id)
         rake_repo = f'repo = Katello::Repository.find_by_id({custom_repo})'
         rake_username = f'; repo.root.upstream_username = "{UPSTREAM_USERNAME}"'
         rake_repo_save = '; repo.save!(validate: false)'
-        result = run(f"echo '{rake_repo}{rake_username}{rake_repo_save}'|foreman-rake console")
-        assert 'true' in result
+        result = target_sat.execute(
+            f"echo '{rake_repo}{rake_username}{rake_repo_save}'|foreman-rake console"
+        )
+        assert 'true' in result.stdout
 
-        global_dict = {self.__class__.__name__: {'repo_id': custom_repo}}
-        create_dict(global_dict)
+        save_test_data({'repo_id': custom_repo})
 
     @pytest.mark.post_upgrade(depend_on=test_pre_repository_scenario_upstream_authorization)
-    def test_post_repository_scenario_upstream_authorization(self):
+    def test_post_repository_scenario_upstream_authorization(self, target_sat, pre_upgrade_data):
         """Verify upstream username for pre-upgrade created repository.
 
         :id: postupgrade-11c5ceee-bfe0-4ce9-8f7b-67a835baf522
@@ -104,11 +85,10 @@ class TestScenarioRepositoryUpstreamAuthorizationCheck:
         :customerscenario: true
         """
 
-        repo_id = get_entity_data(self.__class__.__name__)['repo_id']
-        rake_repo = f'repo = Katello::RootRepository.find_by_id({repo_id})'
+        rake_repo = f"repo = Katello::RootRepository.find_by_id({pre_upgrade_data['repo_id']})"
         rake_username = '; repo.root.upstream_username'
-        result = run(f"echo '{rake_repo}{rake_username}'|foreman-rake console")
-        assert UPSTREAM_USERNAME not in result
+        result = target_sat.execute(f"echo '{rake_repo}{rake_username}'|foreman-rake console")
+        assert UPSTREAM_USERNAME not in result.stdout
 
 
 class TestScenarioCustomRepoCheck:
@@ -132,7 +112,7 @@ class TestScenarioCustomRepoCheck:
     """
 
     @pytest.mark.pre_upgrade
-    def test_pre_scenario_custom_repo_check(self, target_sat):
+    def test_pre_scenario_custom_repo_check(self, target_sat, sat_upgrade_chost, save_test_data):
         """This is pre-upgrade scenario test to verify if we can create a
          custom repository and consume it via content host.
 
@@ -152,67 +132,38 @@ class TestScenarioCustomRepoCheck:
 
         """
         org = target_sat.api.Organization().create()
-        loc = target_sat.api.Location(organization=[org]).create()
         lce = target_sat.api.LifecycleEnvironment(organization=org).create()
 
         product = target_sat.api.Product(organization=org).create()
-        create_repo(rpm1, FILE_PATH)
-        repo = target_sat.api.Repository(
-            product=product.id, url=f'{target_sat.url}/pub/custom_repo'
-        ).create()
+        repo = target_sat.api.Repository(product=product.id, url=settings.repos.yum_1.url).create()
         repo.sync()
-
-        content_view = publish_content_view(org=org, repolist=repo)
-        promote(content_view.version[0], lce.id)
-
-        result = target_sat.execute(
-            f'ls /var/lib/pulp/published/yum/https/repos/{org.label}/{lce.name}/'
-            f'{content_view.label}/custom/{product.label}/{repo.label}/Packages/b/'
-            f'|grep {RPM1_NAME}'
-        )
-
-        assert result.status == 0
-        assert len(result.stdout) >= 1
-
-        subscription = target_sat.api.Subscription(organization=org).search(
-            query={'search': f'name={product.name}'}
-        )[0]
+        content_view = target_sat.publish_content_view(org, repo)
+        content_view.version[0].promote(data={'environment_ids': lce.id})
         ak = target_sat.api.ActivationKey(
             content_view=content_view, organization=org.id, environment=lce
         ).create()
-        ak.add_subscriptions(data={'subscription_id': subscription.id})
+        if not target_sat.is_sca_mode_enabled(org.id):
+            subscription = target_sat.api.Subscription(organization=org).search(
+                query={'search': f'name={product.name}'}
+            )[0]
+            ak.add_subscriptions(data={'subscription_id': subscription.id})
+        sat_upgrade_chost.install_katello_ca(target_sat)
+        sat_upgrade_chost.register_contenthost(org.label, ak.name)
+        sat_upgrade_chost.execute('subscription-manager repos --enable=*;yum clean all')
+        result = sat_upgrade_chost.execute(f'yum install -y {FAKE_0_CUSTOM_PACKAGE_NAME}')
+        assert result.status == 0
 
-        rhel7_client = dockerize(ak_name=ak.name, distro='rhel7', org_label=org.label)
-        client_container_id = [value for value in rhel7_client.values()][0]
-        client_container_name = [key for key in rhel7_client.keys()][0]
-
-        host_location_update(
-            client_container_name=client_container_name, logger_obj=logger, loc=loc
-        )
-        status = execute(
-            docker_execute_command,
-            client_container_id,
-            'subscription-manager identity',
-            host=DOCKER_VM,
-        )[DOCKER_VM]
-        assert org.name in status
-        install_or_update_package(client_hostname=client_container_id, package=RPM1_NAME)
-
-        scenario_dict = {
-            self.__class__.__name__: {
+        save_test_data(
+            {
+                'rhel_client': sat_upgrade_chost.hostname,
                 'content_view_name': content_view.name,
                 'lce_id': lce.id,
-                'lce_name': lce.name,
-                'org_label': org.label,
-                'prod_label': product.label,
-                'rhel_client': rhel7_client,
                 'repo_name': repo.name,
             }
-        }
-        create_dict(scenario_dict)
+        )
 
     @pytest.mark.post_upgrade(depend_on=test_pre_scenario_custom_repo_check)
-    def test_post_scenario_custom_repo_check(self, target_sat):
+    def test_post_scenario_custom_repo_check(self, target_sat, pre_upgrade_data):
         """This is post-upgrade scenario test to verify if we can alter the
         created custom repository and satellite will be able to sync back
         the repo.
@@ -225,20 +176,14 @@ class TestScenarioCustomRepoCheck:
             3. Try to install new package on client.
 
 
-        :expectedresults: Content host should able to pull the new rpm.
+        :expectedresults: Content host should be able to pull the new rpm.
 
         """
-        entity_data = get_entity_data(self.__class__.__name__)
-        client = entity_data.get('rhel_client')
-        client_container_id = list(client.values())[0]
-        content_view_name = entity_data.get('content_view_name')
-        lce_id = entity_data.get('lce_id')
-        lce_name = entity_data.get('lce_name')
-        org_label = entity_data.get('org_label')
-        prod_label = entity_data.get('prod_label')
-        repo_name = entity_data.get('repo_name')
+        client_hostname = pre_upgrade_data.get('rhel_client')
+        content_view_name = pre_upgrade_data.get('content_view_name')
+        lce_id = pre_upgrade_data.get('lce_id')
+        repo_name = pre_upgrade_data.get('repo_name')
 
-        create_repo(rpm2, FILE_PATH, post_upgrade=True, other_rpm=rpm1)
         repo = target_sat.api.Repository(name=repo_name).search()[0]
         repo.sync()
 
@@ -246,14 +191,183 @@ class TestScenarioCustomRepoCheck:
         content_view.publish()
 
         content_view = target_sat.api.ContentView(name=content_view_name).search()[0]
-        promote(content_view.version[-1], lce_id)
-
-        result = target_sat.execute(
-            'ls /var/lib/pulp/published/yum/https/repos/{}/{}/{}/custom/{}/{}/'
-            'Packages/c/| grep {}'.format(
-                org_label, lce_name, content_view.label, prod_label, repo.label, RPM2_NAME
-            )
+        latest_cvv_id = sorted(cvv.id for cvv in content_view.version)[-1]
+        target_sat.api.ContentViewVersion(id=latest_cvv_id).promote(
+            data={'environment_ids': lce_id}
         )
+
+        rhel_client = ContentHost.get_host_by_hostname(client_hostname)
+        result = rhel_client.execute(f'yum install -y {FAKE_4_CUSTOM_PACKAGE_NAME}')
         assert result.status == 0
-        assert len(result.stdout)
-        install_or_update_package(client_hostname=client_container_id, package=RPM2_NAME)
+
+
+class TestScenarioCustomRepoOverrideCheck:
+    """Scenario test to verify that repositories in a non-sca org set to "Enabled"
+    should be overridden to "Enabled(Override)" when upgrading to 6.14.
+
+    Test Steps:
+
+        1. Before Satellite upgrade.
+        2. Create new Organization, Location.
+        3. Create Product, Custom Repository, Content view.
+        4. Create Activation Key and add Subscription.
+        5. Create a Content Host, register it, and check Repository Sets for enabled Repository.
+        6. Upgrade Satellite.
+        7. Search Host to verify Repository Set is set to Enabled(Override).
+
+    BZ: 1265120
+    """
+
+    @pytest.mark.pre_upgrade
+    def test_pre_scenario_custom_repo_sca_toggle(
+        self,
+        target_sat,
+        function_org,
+        function_product,
+        function_lce,
+        sat_upgrade_chost,
+        save_test_data,
+        default_location,
+    ):
+        """This is a pre-upgrade scenario test to verify that repositories in a non-sca org
+        set to "Enabled" should be overridden to "Enabled(Override)" when upgrading to 6.14.
+
+        :id: preupgrade-65e1e312-a743-4605-b226-f580f523377f
+
+        :steps:
+            1. Before Satellite upgrade.
+            2. Create new Organization, Location.
+            3. Create Product, Custom Repository, Content view.
+            4. Create Activation Key and add Subscription.
+            5. Create a Content Host, register it, and check Repository Sets for enabled Repository.
+
+        :expectedresults:
+
+            1. Custom Repository is created.
+            2. Custom Repository is enabled on Host.
+
+        """
+        repo = target_sat.api.Repository(
+            product=function_product.id, url=settings.repos.yum_1.url
+        ).create()
+        repo.sync()
+        content_view = target_sat.publish_content_view(function_org, repo)
+        content_view.version[0].promote(data={'environment_ids': function_lce.id})
+        ak = target_sat.api.ActivationKey(
+            content_view=content_view, organization=function_org.id, environment=function_lce
+        ).create()
+        if not target_sat.is_sca_mode_enabled(function_org.id):
+            subscription = target_sat.api.Subscription(organization=function_org).search(
+                query={'search': f'name={function_product.name}'}
+            )[0]
+            ak.add_subscriptions(data={'subscription_id': subscription.id})
+        sat_upgrade_chost.register(function_org, default_location, ak.name, target_sat)
+        product_details = sat_upgrade_chost.execute('subscription-manager repos --list')
+        assert 'Enabled:   1' in product_details.stdout
+
+        save_test_data(
+            {
+                'rhel_client': sat_upgrade_chost.hostname,
+                'org_name': function_org.name,
+                'product_name': function_product.name,
+                'repo_name': repo.name,
+                'product_details': product_details.stdout,
+            }
+        )
+
+    @pytest.mark.post_upgrade(depend_on=test_pre_scenario_custom_repo_sca_toggle)
+    def test_post_scenario_custom_repo_sca_toggle(self, pre_upgrade_data):
+        """This is a post-upgrade scenario test to verify that repositories in a non-sca
+        Organization set to "Enabled" should be overridden to "Enabled(Override)"
+        when upgrading to 6.14.
+
+        :id: postupgrade-cc392ce3-f3bb-4cf3-afd5-c062e3a5d109
+
+        :steps:
+            1. After upgrade, search Host to verify Repository Set is set to
+            Enabled(Override).
+
+
+        :expectedresults: Repository on Host should be overridden.
+
+        """
+        client_hostname = pre_upgrade_data.get('rhel_client')
+        org_name = pre_upgrade_data.get('org_name')
+        product_name = pre_upgrade_data.get('product_name')
+        repo_name = pre_upgrade_data.get('repo_name')
+        rhel_client = ContentHost.get_host_by_hostname(client_hostname)
+        result = rhel_client.execute('subscription-manager repo-override --list')
+        assert 'enabled: 1' in result.stdout
+        assert f'{org_name}_{product_name}_{repo_name}' in result.stdout
+
+
+class TestScenarioLargeRepoSyncCheck:
+    """Scenario test to verify that large repositories can be synced without
+    failure after an upgrade.
+
+    Test Steps:
+
+        1. Before Satellite upgrade.
+        2. Enable and sync large RH repository.
+        3. Upgrade Satellite.
+        4. Enable and sync a second large repository.
+
+    BZ: 2043144
+
+    :customerscenario: true
+    """
+
+    @pytest.mark.pre_upgrade
+    def test_pre_scenario_sync_large_repo(
+        self, target_sat, module_entitlement_manifest_org, save_test_data
+    ):
+        """This is a pre-upgrade scenario to verify that users can sync large repositories
+        before an upgrade
+
+        :id: afb957dc-c509-4009-ac85-4b71b64d3c74
+
+        :steps:
+            1. Enable a large redhat repository
+            2. Sync repository and assert sync succeeds
+
+        :expectedresults: Large Repositories should succeed when synced
+        """
+        rh_repo_id = target_sat.api_factory.enable_rhrepo_and_fetchid(
+            basearch=DEFAULT_ARCHITECTURE,
+            org_id=module_entitlement_manifest_org.id,
+            product=REPOS['rhel8_bos']['product'],
+            repo=REPOS['rhel8_bos']['name'],
+            reposet=REPOS['rhel8_bos']['reposet'],
+            releasever=REPOS['rhel8_bos']['releasever'],
+        )
+        repo = target_sat.api.Repository(id=rh_repo_id).read()
+        res = repo.sync(timeout=2000)
+        assert res['result'] == 'success'
+        save_test_data({'org_id': module_entitlement_manifest_org.id})
+
+    @pytest.mark.post_upgrade(depend_on=test_pre_scenario_sync_large_repo)
+    def test_post_scenario_sync_large_repo(self, target_sat, pre_upgrade_data):
+        """This is a post-upgrade scenario to verify that large repositories can be
+        synced after an upgrade
+
+        :id: 7bdbb2ac-7197-4e1a-8163-5852943eb49b
+
+        :steps:
+            1. Sync large repository
+            2. Upgrade satellite
+            3. Sync a second large repository in that same organization
+
+        :expectedresults: Large repositories should succeed after an upgrade
+        """
+        org_id = pre_upgrade_data.get('org_id')
+        rh_repo_id = target_sat.api_factory.enable_rhrepo_and_fetchid(
+            basearch=DEFAULT_ARCHITECTURE,
+            org_id=org_id,
+            product=REPOS['rhel8_aps']['product'],
+            repo=REPOS['rhel8_aps']['name'],
+            reposet=REPOS['rhel8_aps']['reposet'],
+            releasever=REPOS['rhel8_aps']['releasever'],
+        )
+        repo = target_sat.api.Repository(id=rh_repo_id).read()
+        res = repo.sync(timeout=4000)
+        assert res['result'] == 'success'

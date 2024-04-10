@@ -1,31 +1,23 @@
 """Test class for Audit UI
 
-:Requirement: Audit
+:Requirement: AuditLog
 
 :CaseAutomation: Automated
 
-:CaseLevel: Medium
-
 :CaseComponent: AuditLog
 
-:Assignee: sbible
+:Team: Endeavour
 
-:TestType: Functional
-
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
-from nailgun import entities
+import pytest
 
-from robottelo.api.utils import create_role_permissions
-from robottelo.constants import ANY_CONTEXT
 from robottelo.constants import ENVIRONMENT
 
 
 @pytest.fixture(scope='module')
-def module_org():
-    return entities.Organization().create()
+def module_org(module_target_sat):
+    return module_target_sat.api.Organization().create()
 
 
 pytestmark = [pytest.mark.run_in_one_thread]
@@ -33,7 +25,7 @@ pytestmark = [pytest.mark.run_in_one_thread]
 
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_create_event(session, module_org, module_location):
+def test_positive_create_event(session, module_org, module_location, module_target_sat):
     """When new host is created, corresponding audit entry appear in the application
 
     :id: d0595705-f4b2-4f06-888b-ee93edd4acf8
@@ -42,13 +34,11 @@ def test_positive_create_event(session, module_org, module_location):
 
     :CaseAutomation: Automated
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
 
     :BZ: 1730360
     """
-    host = entities.Host(organization=module_org, location=module_location).create()
+    host = module_target_sat.api.Host(organization=module_org, location=module_location).create()
     with session:
         session.organization.select(org_name=module_org.name)
         session.location.select(loc_name=module_location.name)
@@ -89,8 +79,6 @@ def test_positive_audit_comment(session, module_org):
 
     :CaseAutomation: Automated
 
-    :CaseLevel: Component
-
     :CaseImportance: Low
     """
     name = gen_string('alpha')
@@ -114,7 +102,7 @@ def test_positive_audit_comment(session, module_org):
 
 
 @pytest.mark.tier2
-def test_positive_update_event(session, module_org):
+def test_positive_update_event(session, module_org, module_target_sat):
     """When existing content view is updated, corresponding audit entry appear
     in the application
 
@@ -124,13 +112,13 @@ def test_positive_update_event(session, module_org):
 
     :CaseAutomation: Automated
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
+
+    :bz: 2222890
     """
     name = gen_string('alpha')
     new_name = gen_string('alpha')
-    cv = entities.ContentView(name=name, organization=module_org).create()
+    cv = module_target_sat.api.ContentView(name=name, organization=module_org).create()
     cv.name = new_name
     cv.update(['name'])
     with session:
@@ -146,7 +134,7 @@ def test_positive_update_event(session, module_org):
 
 
 @pytest.mark.tier2
-def test_positive_delete_event(session, module_org):
+def test_positive_delete_event(session, module_org, module_target_sat):
     """When existing architecture is deleted, corresponding audit entry appear
     in the application
 
@@ -156,11 +144,9 @@ def test_positive_delete_event(session, module_org):
 
     :CaseAutomation: Automated
 
-    :CaseLevel: Component
-
     :CaseImportance: Medium
     """
-    architecture = entities.Architecture().create()
+    architecture = module_target_sat.api.Architecture().create()
     architecture.delete()
     with session:
         values = session.audit.search('type=architecture and action=destroy')
@@ -173,7 +159,7 @@ def test_positive_delete_event(session, module_org):
 
 
 @pytest.mark.tier2
-def test_positive_add_event(session, module_org):
+def test_positive_add_event(session, module_org, module_target_sat):
     """When content view is published and proper lifecycle environment added to it,
     corresponding audit entry appear in the application
 
@@ -183,11 +169,9 @@ def test_positive_add_event(session, module_org):
 
     :CaseAutomation: Automated
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
     """
-    cv = entities.ContentView(organization=module_org).create()
+    cv = module_target_sat.api.ContentView(organization=module_org).create()
     cv.publish()
     with session:
         values = session.audit.search(
@@ -199,48 +183,4 @@ def test_positive_add_event(session, module_org):
         assert len(values['action_summary']) == 1
         assert values['action_summary'][0]['column0'] == 'Added {}/{} to {}'.format(
             ENVIRONMENT, cv.name, cv.name
-        )
-
-
-@pytest.mark.skip_if_open("BZ:1701118")
-@pytest.mark.skip_if_open("BZ:1701132")
-@pytest.mark.tier2
-def test_positive_create_role_filter(session, module_org):
-    """Update a role with new filter and check that corresponding event
-    appeared in the audit log
-
-    :id: 74679c0d-7ef1-4ab1-8282-9377c6cabb9f
-
-    :customerscenario: true
-
-    :expectedresults: audit log has an entry for a new filter that was
-        added to the role
-
-    :BZ: 1425977, 1701118, 1701132
-
-    :CaseAutomation: Automated
-
-    :CaseLevel: Integration
-
-    :CaseImportance: Medium
-    """
-    role = entities.Role(organization=[module_org]).create()
-    with session:
-        session.organization.select(org_name=ANY_CONTEXT['org'])
-        values = session.audit.search(f'type=role and organization={module_org.name}')
-        assert values['action_type'] == 'create'
-        assert values['resource_type'] == 'ROLE'
-        assert values['resource_name'] == role.name
-        create_role_permissions(
-            role, {'Architecture': ['view_architectures', 'edit_architectures']}
-        )
-        values = session.audit.search('type=filter')
-        assert values['action_type'] == 'added'
-        assert values['resource_type'] == 'Filter'
-        assert values['resource_name'] == '{} and {} / {}'.format(
-            'view_architectures', 'edit_architectures', role.name
-        )
-        assert len(values['action_summary']) == 1
-        assert values['action_summary'][0]['column0'] == 'Added {} and {} to {}'.format(
-            'view_architectures', 'edit_architectures', role.name
         )

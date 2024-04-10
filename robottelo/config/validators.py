@@ -1,8 +1,6 @@
 from dynaconf import Validator
 
-from robottelo.constants import AZURERM_VALID_REGIONS
-from robottelo.constants import VALID_GCE_ZONES
-
+from robottelo.constants import AZURERM_VALID_REGIONS, VALID_GCE_ZONES
 
 VALIDATORS = dict(
     supportability=[
@@ -13,6 +11,7 @@ VALIDATORS = dict(
         Validator('server.hostnames', must_exist=True, is_type_of=list),
         Validator('server.version.release', must_exist=True),
         Validator('server.version.source', must_exist=True),
+        Validator('server.version.rhel_version', must_exist=True, cast=str),
         Validator(
             'server.xdist_behavior', must_exist=True, is_in=['run-on-one', 'balance', 'on-demand']
         ),
@@ -24,16 +23,18 @@ VALIDATORS = dict(
         ),
         Validator('server.admin_password', default='changeme'),
         Validator('server.admin_username', default='admin'),
-        Validator('server.deploy_workflow', must_exist=True),
+        Validator('server.deploy_workflows', must_exist=True, is_type_of=dict),
+        Validator('server.deploy_workflows.product', must_exist=True),
+        Validator('server.deploy_workflows.os', must_exist=True),
         Validator('server.deploy_arguments', must_exist=True, is_type_of=dict, default={}),
         Validator('server.scheme', default='https'),
         Validator('server.port', default=443),
         Validator('server.ssh_username', default='root'),
         Validator('server.ssh_password', default=None),
+        Validator('server.verify_ca', default=False),
     ],
     content_host=[
         Validator('content_host.default_rhel_version', must_exist=True),
-        Validator('content_host.default_deploy_workflow', must_exist=True),
     ],
     subscription=[
         Validator('subscription.rhn_username', must_exist=True),
@@ -66,10 +67,11 @@ VALIDATORS = dict(
         Validator('bugzilla.api_key', must_exist=True),
     ],
     capsule=[
-        Validator('capsule.instance_name', must_exist=True),
         Validator('capsule.version.release', must_exist=True),
         Validator('capsule.version.source', must_exist=True),
-        Validator('capsule.deploy_workflow', must_exist=True),
+        Validator('capsule.deploy_workflows', must_exist=True, is_type_of=dict),
+        Validator('capsule.deploy_workflows.product', must_exist=True),
+        Validator('capsule.deploy_workflows.os', must_exist=True),
         Validator('capsule.deploy_arguments', must_exist=True, is_type_of=dict, default={}),
     ],
     certs=[
@@ -200,6 +202,14 @@ VALIDATORS = dict(
             must_exist=True,
         ),
     ],
+    ohsnap=[
+        Validator(
+            'ohsnap.host',
+            'ohsnap.request_retry.timeout',
+            'ohsnap.request_retry.delay',
+            must_exist=True,
+        ),
+    ],
     open_ldap=[
         Validator(
             'open_ldap.base_dn',
@@ -215,7 +225,12 @@ VALIDATORS = dict(
         Validator(
             'oscap.content_path',
             must_exist=True,
-        )
+        ),
+        Validator(
+            'oscap.profile',
+            default='security7',
+            must_exist=True,
+        ),
     ],
     osp=[
         Validator(
@@ -255,7 +270,6 @@ VALIDATORS = dict(
             'repos.rhscl_repo',
             'repos.ansible_repo',
             'repos.swid_tools_repo',
-            'repos.ohsnap_repo_host',
             must_exist=True,
             is_type_of=str,
         ),

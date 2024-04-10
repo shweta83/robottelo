@@ -4,23 +4,17 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Puppet
 
-:Assignee: vsedmik
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: Low
 
-:Upstream: No
 """
 import pytest
 
-from robottelo.constants import DEFAULT_CV
-from robottelo.constants import ENVIRONMENT
-from robottelo.datafactory import gen_string
+from robottelo.constants import DEFAULT_CV, ENVIRONMENT
+from robottelo.utils.datafactory import gen_string
 
 
 @pytest.mark.upgrade
@@ -31,8 +25,6 @@ def test_positive_end_to_end(session_puppet_enabled_sat, module_puppet_org, modu
     :id: 2ef32b2d-acdd-4cb1-a760-da4fd1166167
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """
@@ -74,8 +66,6 @@ def test_positive_availability_for_host_and_hostgroup_in_multiple_orgs(
         organization where it is present in
 
     :BZ: 543178
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """

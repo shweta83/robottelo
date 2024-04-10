@@ -4,17 +4,12 @@
 
 :CaseAutomation: NotAutomated
 
-:CaseLevel: System
-
 :CaseComponent: Provisioning
 
-:Assignee: sganar
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: Critical
 
-:Upstream: No
 """
 import pytest
 

@@ -1,18 +1,29 @@
 # Repository Fixtures
-import pytest
 from fauxfactory import gen_string
 from nailgun import entities
+from nailgun.entity_mixins import call_entity_method_with_timeout
+import pytest
 
-from robottelo.api.utils import call_entity_method_with_timeout
-from robottelo.api.utils import enable_rhrepo_and_fetchid
-from robottelo.api.utils import promote
-from robottelo.constants import DEFAULT_ARCHITECTURE
-from robottelo.constants import PRDS
-from robottelo.constants import REPOS
-from robottelo.constants import REPOSET
+from robottelo.config import settings
+from robottelo.constants import DEFAULT_ARCHITECTURE, DEFAULT_ORG, PRDS, REPOS, REPOSET
 
 
-@pytest.fixture(scope='function')
+@pytest.fixture(scope='module')
+def module_repo_options(request, module_org, module_product):
+    """Return the options that were passed as indirect parameters."""
+    options = getattr(request, 'param', {}).copy()
+    options['organization'] = module_org
+    options['product'] = module_product
+    return options
+
+
+@pytest.fixture(scope='module')
+def module_repo(module_repo_options, module_target_sat):
+    """Create a new repository."""
+    return module_target_sat.api.Repository(**module_repo_options).create()
+
+
+@pytest.fixture
 def function_product(function_org):
     return entities.Product(organization=function_org).create()
 
@@ -23,28 +34,10 @@ def module_product(module_org, module_target_sat):
 
 
 @pytest.fixture(scope='module')
-def rh_repo_gt_manifest(module_gt_manifest_org):
-    """Use GT manifest org, creates RH tools repo, syncs and returns RH repo."""
-    # enable rhel repo and return its ID
-    rh_repo_id = enable_rhrepo_and_fetchid(
-        basearch=DEFAULT_ARCHITECTURE,
-        org_id=module_gt_manifest_org.id,
-        product=PRDS['rhel'],
-        repo=REPOS['rhst7']['name'],
-        reposet=REPOSET['rhst7'],
-        releasever=None,
-    )
-    # Sync step because repo is not synced by default
-    rh_repo = entities.Repository(id=rh_repo_id).read()
-    rh_repo.sync()
-    return rh_repo
-
-
-@pytest.fixture(scope='module')
 def module_rhst_repo(module_target_sat, module_org_with_manifest, module_promoted_cv, module_lce):
     """Use module org with manifest, creates RH tools repo, syncs and returns RH repo id."""
     # enable rhel repo and return its ID
-    rh_repo_id = enable_rhrepo_and_fetchid(
+    rh_repo_id = module_target_sat.api_factory.enable_rhrepo_and_fetchid(
         basearch=DEFAULT_ARCHITECTURE,
         org_id=module_org_with_manifest.id,
         product=PRDS['rhel'],
@@ -59,11 +52,12 @@ def module_rhst_repo(module_target_sat, module_org_with_manifest, module_promote
     )
     cv.publish()
     cv = cv.read()
-    promote(cv.version[-1], environment_id=module_lce.id)
+    cv.version.sort(key=lambda version: version.id)
+    cv.version[-1].promote(data={'environment_ids': module_lce.id})
     return REPOS['rhst7']['id']
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def repo_setup():
     """
     This fixture is used to create an organization, product, repository, and lifecycle environment
@@ -74,8 +68,31 @@ def repo_setup():
     product = entities.Product(organization=org).create()
     repo = entities.Repository(name=repo_name, product=product).create()
     lce = entities.LifecycleEnvironment(organization=org).create()
-    details = {'org': org, 'product': product, 'repo': repo, 'lce': lce}
-    yield details
+    return {'org': org, 'product': product, 'repo': repo, 'lce': lce}
+
+
+@pytest.fixture(scope='module')
+def setup_content(module_org):
+    """This fixture is used to setup an activation key with a custom product attached. Used for
+    registering a host
+    """
+    org = module_org
+    custom_repo = entities.Repository(
+        product=entities.Product(organization=org).create(),
+    ).create()
+    custom_repo.sync()
+    lce = entities.LifecycleEnvironment(organization=org).create()
+    cv = entities.ContentView(
+        organization=org,
+        repository=[custom_repo.id],
+    ).create()
+    cv.publish()
+    cvv = cv.read().version[0].read()
+    cvv.promote(data={'environment_ids': lce.id, 'force': False})
+    ak = entities.ActivationKey(
+        content_view=cv, max_hosts=100, organization=org, environment=lce, auto_attach=True
+    ).create()
+    return ak, org, custom_repo
 
 
 @pytest.fixture(scope='module')
@@ -85,6 +102,16 @@ def module_repository(os_path, module_product, module_target_sat):
     return repo
 
 
+@pytest.fixture
+def custom_synced_repo(target_sat):
+    custom_repo = target_sat.api.Repository(
+        product=target_sat.api.Product(organization=DEFAULT_ORG).create(),
+        url=settings.repos.yum_0.url,
+    ).create()
+    custom_repo.sync()
+    return custom_repo
+
+
 def _simplify_repos(request, repos):
     """This is a helper function that transforms repos_collection related fixture parameters into
     a list that can be passed to robottelo.host_helpers.RepositoryMixins.RepositoryCollection
@@ -92,7 +119,7 @@ def _simplify_repos(request, repos):
 
     E.g: the parameters list to repos_collection fixture is:
     [{
-        'distro': DISTRO_RHEL7,
+        'distro': 'rhel7',
         'SatelliteToolsRepository': {},
         'YumRepository': [{'url': settings.repos.yum_0.url},{'url': settings.repos.yum_6.url}]
     }]
@@ -162,7 +189,7 @@ def repos_collection(request, target_sat):
     """
     repos = getattr(request, 'param', [])
     repo_distro, repos = _simplify_repos(request, repos)
-    _repos_collection = target_sat.cli_factory.RepositoryCollection(
+    return target_sat.cli_factory.RepositoryCollection(
         distro=repo_distro or request.getfixturevalue('distro'),
         repositories=[
             getattr(target_sat.cli_factory, repo_name)(**repo_params)
@@ -170,7 +197,6 @@ def repos_collection(request, target_sat):
             for repo_name, repo_params in repo.items()
         ],
     )
-    return _repos_collection
 
 
 @pytest.fixture(scope='module')
@@ -198,7 +224,9 @@ def module_repos_collection_with_setup(request, module_target_sat, module_org, m
 
 
 @pytest.fixture(scope='module')
-def module_repos_collection_with_manifest(request, module_target_sat, module_org, module_lce):
+def module_repos_collection_with_manifest(
+    request, module_target_sat, module_sca_manifest_org, module_lce
+):
     """This fixture and its usage is very similar to repos_collection fixture above with extra
     setup_content and uploaded manifest capabilities using module_org and module_lce fixtures
 
@@ -216,5 +244,27 @@ def module_repos_collection_with_manifest(request, module_target_sat, module_org
             for repo_name, repo_params in repo.items()
         ],
     )
-    _repos_collection.setup_content(module_org.id, module_lce.id, upload_manifest=True)
+    _repos_collection.setup_content(module_sca_manifest_org.id, module_lce.id)
+    return _repos_collection
+
+
+@pytest.fixture
+def function_repos_collection_with_manifest(
+    request, target_sat, function_sca_manifest_org, function_lce
+):
+    """This fixture and its usage is very similar to repos_collection fixture above with extra
+    setup_content and uploaded manifest capabilities using function_lce and
+    function_sca_manifest_org fixtures
+    """
+    repos = getattr(request, 'param', [])
+    repo_distro, repos = _simplify_repos(request, repos)
+    _repos_collection = target_sat.cli_factory.RepositoryCollection(
+        distro=repo_distro,
+        repositories=[
+            getattr(target_sat.cli_factory, repo_name)(**repo_params)
+            for repo in repos
+            for repo_name, repo_params in repo.items()
+        ],
+    )
+    _repos_collection.setup_content(function_sca_manifest_org.id, function_lce.id)
     return _repos_collection

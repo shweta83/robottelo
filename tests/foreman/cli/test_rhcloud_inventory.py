@@ -1,36 +1,33 @@
 """CLI tests for RH Cloud - Inventory, aka Insights Inventory Upload
 
-:Requirement: RH Cloud - Inventory
+:Requirement: RHCloud
 
 :CaseAutomation: Automated
 
-:CaseLevel: System
+:CaseComponent: RHCloud
 
-:CaseComponent: RHCloud-Inventory
-
-:Assignee: addubey
-
-:TestType: Functional
+:Team: Phoenix-subscriptions
 
 :CaseImportance: High
 
-:Upstream: No
 """
 from datetime import datetime
+import time
 
 import pytest
 from wait_for import wait_for
 
 from robottelo.config import robottelo_tmp_dir
-from robottelo.rh_cloud_utils import get_local_file_data
-from robottelo.rh_cloud_utils import get_remote_report_checksum
+from robottelo.utils.io import get_local_file_data, get_remote_report_checksum
 
 inventory_sync_task = 'InventorySync::Async::InventoryFullSync'
+generate_report_jobs = 'ForemanInventoryUpload::Async::GenerateAllReportsJob'
 
 
 @pytest.mark.tier3
+@pytest.mark.e2e
 def test_positive_inventory_generate_upload_cli(
-    organization_ak_setup, rhcloud_registered_hosts, rhcloud_sat_host
+    rhcloud_manifest_org, rhcloud_registered_hosts, module_target_sat
 ):
     """Tests Insights inventory generation and upload via foreman-rake commands:
     https://github.com/theforeman/foreman_rh_cloud/blob/master/README.md
@@ -39,7 +36,7 @@ def test_positive_inventory_generate_upload_cli(
 
     :customerscenario: true
 
-    :Steps:
+    :steps:
 
         0. Create a VM and register to insights within org having manifest.
         1. Generate and upload report for all organizations
@@ -62,13 +59,11 @@ def test_positive_inventory_generate_upload_cli(
     :BZ: 1957129, 1895953, 1956190
 
     :CaseAutomation: Automated
-
-    :CaseLevel: System
     """
-    org, _ = organization_ak_setup
+    org = rhcloud_manifest_org
     cmd = f'organization_id={org.id} foreman-rake rh_cloud_inventory:report:generate_upload'
     upload_success_msg = f"Generated and uploaded inventory report for organization '{org.name}'"
-    result = rhcloud_sat_host.execute(cmd)
+    result = module_target_sat.execute(cmd)
     assert result.status == 0
     assert upload_success_msg in result.stdout
 
@@ -77,14 +72,16 @@ def test_positive_inventory_generate_upload_cli(
         f'/var/lib/foreman/red_hat_inventory/uploads/done/report_for_{org.id}.tar.xz'
     )
     wait_for(
-        lambda: rhcloud_sat_host.get(remote_path=remote_report_path, local_path=local_report_path),
+        lambda: module_target_sat.get(
+            remote_path=str(remote_report_path), local_path=str(local_report_path)
+        ),
         timeout=60,
         delay=15,
         silent_failure=True,
         handle_exception=True,
     )
     local_file_data = get_local_file_data(local_report_path)
-    assert local_file_data['checksum'] == get_remote_report_checksum(rhcloud_sat_host, org.id)
+    assert local_file_data['checksum'] == get_remote_report_checksum(module_target_sat, org.id)
     assert local_file_data['size'] > 0
     assert local_file_data['extractable']
     assert local_file_data['json_files_parsable']
@@ -96,18 +93,19 @@ def test_positive_inventory_generate_upload_cli(
         assert hosts_count == local_file_data['slices_counts'][slice_name]
 
 
+@pytest.mark.e2e
 @pytest.mark.tier3
 def test_positive_inventory_recommendation_sync(
-    organization_ak_setup,
+    rhcloud_manifest_org,
     rhcloud_registered_hosts,
-    rhcloud_sat_host,
+    module_target_sat,
 ):
     """Tests Insights recommendation sync via foreman-rake commands:
     https://github.com/theforeman/foreman_rh_cloud/blob/master/README.md
 
     :id: 361af91d-1246-4308-9cc8-66beada7d651
 
-    :Steps:
+    :steps:
 
         0. Create a VM and register to insights within org having manifest.
         1. Sync insights recommendation using following foreman-rake command.
@@ -118,15 +116,13 @@ def test_positive_inventory_recommendation_sync(
     :BZ: 1957186
 
     :CaseAutomation: Automated
-
-    :CaseLevel: System
     """
-    org, ak = organization_ak_setup
+    org = rhcloud_manifest_org
     cmd = f'organization_id={org.id} foreman-rake rh_cloud_insights:sync'
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
-    result = rhcloud_sat_host.execute(cmd)
+    result = module_target_sat.execute(cmd)
     wait_for(
-        lambda: rhcloud_sat_host.api.ForemanTask()
+        lambda: module_target_sat.api.ForemanTask()
         .search(query={'search': f'Insights full sync and started_at >= "{timestamp}"'})[0]
         .result
         == 'success',
@@ -139,18 +135,19 @@ def test_positive_inventory_recommendation_sync(
     assert result.stdout == 'Synchronized Insights hosts hits data\n'
 
 
+@pytest.mark.e2e
 @pytest.mark.tier3
 def test_positive_sync_inventory_status(
-    organization_ak_setup,
+    rhcloud_manifest_org,
     rhcloud_registered_hosts,
-    rhcloud_sat_host,
+    module_target_sat,
 ):
     """Sync inventory status via foreman-rake commands:
     https://github.com/theforeman/foreman_rh_cloud/blob/master/README.md
 
     :id: 915ffbfd-c2e6-4296-9d69-f3f9a0e79b32
 
-    :Steps:
+    :steps:
 
         0. Create a VM and register to insights within org having manifest.
         1. Sync inventory status for specific organization.
@@ -162,19 +159,17 @@ def test_positive_sync_inventory_status(
     :BZ: 1957186
 
     :CaseAutomation: Automated
-
-    :CaseLevel: System
     """
-    org, ak = organization_ak_setup
+    org = rhcloud_manifest_org
     cmd = f'organization_id={org.id} foreman-rake rh_cloud_inventory:sync'
     success_msg = f"Synchronized inventory for organization '{org.name}'"
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
-    result = rhcloud_sat_host.execute(cmd)
+    result = module_target_sat.execute(cmd)
     assert result.status == 0
     assert success_msg in result.stdout
     # Check task details
     wait_for(
-        lambda: rhcloud_sat_host.api.ForemanTask()
+        lambda: module_target_sat.api.ForemanTask()
         .search(query={'search': f'{inventory_sync_task} and started_at >= "{timestamp}"'})[0]
         .result
         == 'success',
@@ -183,7 +178,7 @@ def test_positive_sync_inventory_status(
         silent_failure=True,
         handle_exception=True,
     )
-    task_output = rhcloud_sat_host.api.ForemanTask().search(
+    task_output = module_target_sat.api.ForemanTask().search(
         query={'search': f'{inventory_sync_task} and started_at >= "{timestamp}"'}
     )
     assert task_output[0].output['host_statuses']['sync'] == 2
@@ -197,12 +192,12 @@ def test_max_org_size_variable():
 
     :id: 7dd964c3-fde8-4335-ab13-02329119d7f6
 
-    :Steps:
+    :steps:
 
         1. Register few content hosts with satellite.
         2. Change value of max_org_size for testing purpose(See BZ#1962694#c2).
         3. Start report generation and upload using
-            ForemanInventoryUpload::Async::GenerateAllReportsJob.perform_now
+            ForemanTasks.sync_task(ForemanInventoryUpload::Async::GenerateAllReportsJob)
 
     :expectedresults: If organization had more hosts than specified by max_org_size variable
         then report won't be uploaded.
@@ -212,8 +207,6 @@ def test_max_org_size_variable():
     :BZ: 1962694
 
     :CaseAutomation: ManualOnly
-
-    :CaseLevel: System
     """
 
 
@@ -223,7 +216,7 @@ def test_satellite_inventory_slice_variable():
 
     :id: ffbef1c7-08f3-444b-9255-2251d5594fcb
 
-    :Steps:
+    :steps:
 
         1. Register few content hosts with satellite.
         2. Set SATELLITE_INVENTORY_SLICE_SIZE=1 dynflow environment variable.
@@ -238,8 +231,6 @@ def test_satellite_inventory_slice_variable():
     :BZ: 1945661
 
     :CaseAutomation: ManualOnly
-
-    :CaseLevel: System
     """
 
 
@@ -249,7 +240,7 @@ def test_rhcloud_external_links():
 
     :id: bc7f6354-ed3e-4ac5-939d-90bfe4177043
 
-    :Steps:
+    :steps:
 
         1. Go to Configure > Inventory upload
         2. Go to Configure > Insights
@@ -261,6 +252,48 @@ def test_rhcloud_external_links():
     :BZ: 1975093
 
     :CaseAutomation: ManualOnly
-
-    :CaseLevel: System
     """
+
+
+@pytest.mark.tier3
+def test_positive_generate_all_reports_job(target_sat):
+    """Generate all reports job via foreman-rake console:
+
+    :id: a9e4bfdb-6d7c-4f8c-ae57-a81442926dd8
+
+    :steps:
+        1. Disable the Automatic Inventory upload setting.
+        2. Execute Foreman GenerateAllReportsJob via foreman-rake.
+
+    :expectedresults: Reports generation works as expected.
+
+    :BZ: 2110163
+
+    :customerscenario: true
+
+    :CaseAutomation: Automated
+    """
+    try:
+        target_sat.update_setting('allow_auto_inventory_upload', False)
+        with target_sat.session.shell() as sh:
+            sh.send('foreman-rake console')
+            time.sleep(30)  # sleep to allow time for console to open
+            sh.send(f'ForemanTasks.async_task({generate_report_jobs})')
+            time.sleep(3)  # sleep for the cmd execution
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+        wait_for(
+            lambda: target_sat.api.ForemanTask()
+            .search(query={'search': f'{generate_report_jobs} and started_at >= "{timestamp}"'})[0]
+            .result
+            == 'success',
+            timeout=400,
+            delay=15,
+            silent_failure=True,
+            handle_exception=True,
+        )
+        task_output = target_sat.api.ForemanTask().search(
+            query={'search': f'{generate_report_jobs} and started_at >= {timestamp}'}
+        )
+        assert task_output[0].result == "success"
+    finally:
+        target_sat.update_setting('allow_auto_inventory_upload', True)

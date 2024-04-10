@@ -4,73 +4,64 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: Repositories
 
-:Assignee: chiggins
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
-from datetime import datetime
-from datetime import timedelta
-from random import randint
-from random import shuffle
+from datetime import datetime, timedelta
+from random import randint, shuffle
 
-import pytest
-from airgun.session import Session
-from nailgun import entities
 from navmazing import NavigationTriesExceeded
+import pytest
 
-from robottelo import manifests
-from robottelo.api.utils import create_role_permissions
-from robottelo.api.utils import wait_for_tasks
+from robottelo import constants
 from robottelo.config import settings
-from robottelo.constants import CONTAINER_REGISTRY_HUB
-from robottelo.constants import DISTRO_RHEL7
-from robottelo.constants import DOWNLOAD_POLICIES
-from robottelo.constants import INVALID_URL
-from robottelo.constants import REPO_TYPE
-from robottelo.constants import REPOSET
-from robottelo.constants import VALID_GPG_KEY_BETA_FILE
-from robottelo.constants import VALID_GPG_KEY_FILE
-from robottelo.constants.repos import ANSIBLE_GALAXY
-from robottelo.datafactory import gen_string
-from robottelo.helpers import read_data_file
+from robottelo.constants import (
+    CONTAINER_REGISTRY_HUB,
+    DOWNLOAD_POLICIES,
+    INVALID_URL,
+    PRDS,
+    REPO_TYPE,
+    REPOS,
+    REPOSET,
+    DataFile,
+)
+from robottelo.constants.repos import (
+    ANSIBLE_GALAXY,
+    CUSTOM_RPM_SHA,
+)
 from robottelo.hosts import get_sat_version
+from robottelo.utils.datafactory import gen_string
 
 
 @pytest.fixture(scope='module')
-def module_org():
-    return entities.Organization().create()
+def module_org(module_target_sat):
+    return module_target_sat.api.Organization().create()
 
 
 @pytest.fixture(scope='module')
-def module_prod(module_org):
-    return entities.Product(organization=module_org).create()
+def module_prod(module_org, module_target_sat):
+    return module_target_sat.api.Product(organization=module_org).create()
 
 
 @pytest.mark.tier2
 @pytest.mark.upgrade
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_create_in_different_orgs(session, module_org):
+def test_positive_create_in_different_orgs(session, module_org, module_target_sat):
     """Create repository in two different orgs with same name
 
     :id: 019c2242-8802-4bae-82c5-accf8f793dbc
 
     :expectedresults: Repository is created successfully for both
         organizations
-
-    :CaseLevel: Integration
     """
     repo_name = gen_string('alpha')
-    org2 = entities.Organization().create()
-    prod1 = entities.Product(organization=module_org).create()
-    prod2 = entities.Product(organization=org2).create()
+    org2 = module_target_sat.api.Organization().create()
+    prod1 = module_target_sat.api.Product(organization=module_org).create()
+    prod2 = module_target_sat.api.Product(organization=org2).create()
     with session:
         for org, prod in [[module_org, prod1], [org2, prod2]]:
             session.organization.select(org_name=org.name)
@@ -91,7 +82,7 @@ def test_positive_create_in_different_orgs(session, module_org):
 
 @pytest.mark.tier2
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_create_as_non_admin_user(module_org, test_name):
+def test_positive_create_as_non_admin_user(module_org, test_name, target_sat):
     """Create a repository as a non admin user
 
     :id: 582949c4-b95f-4d64-b7f0-fb80b3d2bd7e
@@ -99,8 +90,6 @@ def test_positive_create_as_non_admin_user(module_org, test_name):
     :expectedresults: Repository successfully created
 
     :BZ: 1426393
-
-    :CaseLevel: Integration
     """
     user_login = gen_string('alpha')
     user_password = gen_string('alphanumeric')
@@ -115,9 +104,9 @@ def test_positive_create_as_non_admin_user(module_org, test_name):
             'sync_products',
         ],
     }
-    role = entities.Role().create()
-    create_role_permissions(role, user_permissions)
-    entities.User(
+    role = target_sat.api.Role().create()
+    target_sat.api_factory.create_role_permissions(role, user_permissions)
+    target_sat.api.User(
         login=user_login,
         password=user_password,
         role=[role],
@@ -125,8 +114,8 @@ def test_positive_create_as_non_admin_user(module_org, test_name):
         default_organization=module_org,
         organization=[module_org],
     ).create()
-    product = entities.Product(organization=module_org).create()
-    with Session(test_name, user=user_login, password=user_password) as session:
+    product = target_sat.api.Product(organization=module_org).create()
+    with target_sat.ui_session(test_name, user=user_login, password=user_password) as session:
         # ensure that the created user is not a global admin user
         # check administer->organizations page
         with pytest.raises(NavigationTriesExceeded):
@@ -145,22 +134,24 @@ def test_positive_create_as_non_admin_user(module_org, test_name):
 @pytest.mark.tier2
 @pytest.mark.upgrade
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_create_yum_repo_same_url_different_orgs(session, module_prod):
+def test_positive_create_yum_repo_same_url_different_orgs(session, module_prod, module_target_sat):
     """Create two repos with the same URL in two different organizations.
 
     :id: f4cb00ed-6faf-4c79-9f66-76cd333299cb
 
     :expectedresults: Repositories are created and have equal number of packages.
-
-    :CaseLevel: Integration
     """
     # Create first repository
-    repo = entities.Repository(product=module_prod, url=settings.repos.yum_0.url).create()
+    repo = module_target_sat.api.Repository(
+        product=module_prod, url=settings.repos.yum_0.url
+    ).create()
     repo.sync()
     # Create second repository
-    org = entities.Organization().create()
-    product = entities.Product(organization=org).create()
-    new_repo = entities.Repository(product=product, url=settings.repos.yum_0.url).create()
+    org = module_target_sat.api.Organization().create()
+    product = module_target_sat.api.Product(organization=org).create()
+    new_repo = module_target_sat.api.Repository(
+        product=product, url=settings.repos.yum_0.url
+    ).create()
     new_repo.sync()
     with session:
         # Check packages number in first repository
@@ -181,7 +172,7 @@ def test_positive_create_yum_repo_same_url_different_orgs(session, module_prod):
 @pytest.mark.tier2
 @pytest.mark.upgrade
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_create_as_non_admin_user_with_cv_published(module_org, test_name):
+def test_positive_create_as_non_admin_user_with_cv_published(module_org, test_name, target_sat):
     """Create a repository as a non admin user in a product that already
     contain a repository that is used in a published content view.
 
@@ -190,8 +181,6 @@ def test_positive_create_as_non_admin_user_with_cv_published(module_org, test_na
     :expectedresults: New repository successfully created by non admin user
 
     :BZ: 1447829
-
-    :CaseLevel: Integration
     """
     user_login = gen_string('alpha')
     user_password = gen_string('alphanumeric')
@@ -206,9 +195,9 @@ def test_positive_create_as_non_admin_user_with_cv_published(module_org, test_na
             'sync_products',
         ],
     }
-    role = entities.Role().create()
-    create_role_permissions(role, user_permissions)
-    entities.User(
+    role = target_sat.api.Role().create()
+    target_sat.api_factory.create_role_permissions(role, user_permissions)
+    target_sat.api.User(
         login=user_login,
         password=user_password,
         role=[role],
@@ -216,18 +205,18 @@ def test_positive_create_as_non_admin_user_with_cv_published(module_org, test_na
         default_organization=module_org,
         organization=[module_org],
     ).create()
-    prod = entities.Product(organization=module_org).create()
-    repo = entities.Repository(product=prod, url=settings.repos.yum_2.url).create()
+    prod = target_sat.api.Product(organization=module_org).create()
+    repo = target_sat.api.Repository(product=prod, url=settings.repos.yum_2.url).create()
     repo.sync()
-    content_view = entities.ContentView(organization=module_org).create()
+    content_view = target_sat.api.ContentView(organization=module_org).create()
     content_view.repository = [repo]
     content_view = content_view.update(['repository'])
     content_view.publish()
-    with Session(test_name, user_login, user_password) as session:
+    with target_sat.ui_session(test_name, user_login, user_password) as session:
         # ensure that the created user is not a global admin user
         # check administer->users page
+        pswd = gen_string('alphanumeric')
         with pytest.raises(NavigationTriesExceeded):
-            pswd = gen_string('alphanumeric')
             session.user.create(
                 {
                     'user.login': gen_string('alphanumeric'),
@@ -255,17 +244,15 @@ def test_positive_create_as_non_admin_user_with_cv_published(module_org, test_na
 @pytest.mark.upgrade
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
 @pytest.mark.usefixtures('allow_repo_discovery')
-def test_positive_discover_repo_via_existing_product(session, module_org):
+def test_positive_discover_repo_via_existing_product(session, module_org, module_target_sat):
     """Create repository via repo-discovery under existing product
 
     :id: 9181950c-a756-456f-a46a-059e7a2add3c
 
     :expectedresults: Repository is discovered and created
-
-    :CaseLevel: Integration
     """
     repo_name = 'fakerepo01'
-    product = entities.Product(organization=module_org).create()
+    product = module_target_sat.api.Product(organization=module_org).create()
     with session:
         session.organization.select(org_name=module_org.name)
         session.product.discover_repo(
@@ -289,8 +276,6 @@ def test_positive_discover_repo_via_new_product(session, module_org):
     :id: dc5281f8-1a8a-4a17-b746-728f344a1504
 
     :expectedresults: Repository is discovered and created
-
-    :CaseLevel: Integration
     """
     product_name = gen_string('alpha')
     repo_name = 'fakerepo01'
@@ -313,16 +298,16 @@ def test_positive_discover_repo_via_new_product(session, module_org):
 @pytest.mark.upgrade
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
 @pytest.mark.usefixtures('allow_repo_discovery')
-def test_positive_discover_module_stream_repo_via_existing_product(session, module_org):
+def test_positive_discover_module_stream_repo_via_existing_product(
+    session, module_org, module_target_sat
+):
     """Create repository with module streams via repo-discovery under an existing product.
 
     :id: e7b9e2c4-7ecd-4cde-8f74-961fbac8919c
 
-    :CaseLevel: Integration
-
     :BZ: 1676642
 
-    :Steps:
+    :steps:
         1. Create a product.
         2. From Content > Products, click on the Repo Discovery button.
         3. Enter a url containing a yum repository with module streams, e.g.,
@@ -333,7 +318,7 @@ def test_positive_discover_module_stream_repo_via_existing_product(session, modu
     """
     repo_name = gen_string('alpha')
     repo_label = gen_string('alpha')
-    product = entities.Product(organization=module_org).create()
+    product = module_target_sat.api.Product(organization=module_org).create()
     with session:
         session.organization.select(org_name=module_org.name)
         session.product.discover_repo(
@@ -354,17 +339,15 @@ def test_positive_discover_module_stream_repo_via_existing_product(session, modu
 @pytest.mark.tier2
 @pytest.mark.upgrade
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_sync_custom_repo_yum(session, module_org):
+def test_positive_sync_custom_repo_yum(session, module_org, module_target_sat):
     """Create Custom yum repos and sync it via the repos page.
 
     :id: afa218f4-e97a-4240-a82a-e69538d837a1
 
     :expectedresults: Sync procedure for specific yum repository is successful
-
-    :CaseLevel: Integration
     """
-    product = entities.Product(organization=module_org).create()
-    repo = entities.Repository(url=settings.repos.yum_1.url, product=product).create()
+    product = module_target_sat.api.Product(organization=module_org).create()
+    repo = module_target_sat.api.Repository(url=settings.repos.yum_1.url, product=product).create()
     with session:
         result = session.repository.synchronize(product.name, repo.name)
         assert result['result'] == 'success'
@@ -377,18 +360,16 @@ def test_positive_sync_custom_repo_yum(session, module_org):
 
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_sync_custom_repo_docker(session, module_org):
+def test_positive_sync_custom_repo_docker(session, module_org, module_target_sat):
     """Create Custom docker repos and sync it via the repos page.
 
     :id: 942e0b4f-3524-4f00-812d-bdad306f81de
 
     :expectedresults: Sync procedure for specific docker repository is
         successful
-
-    :CaseLevel: Integration
     """
-    product = entities.Product(organization=module_org).create()
-    repo = entities.Repository(
+    product = module_target_sat.api.Product(organization=module_org).create()
+    repo = module_target_sat.api.Repository(
         url=CONTAINER_REGISTRY_HUB, product=product, content_type=REPO_TYPE['docker']
     ).create()
     with session:
@@ -398,7 +379,7 @@ def test_positive_sync_custom_repo_docker(session, module_org):
 
 @pytest.mark.tier2
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_resync_custom_repo_after_invalid_update(session, module_org):
+def test_positive_resync_custom_repo_after_invalid_update(session, module_org, module_target_sat):
     """Create Custom yum repo and sync it via the repos page. Then try to
     change repo url to invalid one and re-sync that repository
 
@@ -410,11 +391,9 @@ def test_positive_resync_custom_repo_after_invalid_update(session, module_org):
         procedure for specific yum repository is successful
 
     :BZ: 1487173, 1262313
-
-    :CaseLevel: Integration
     """
-    product = entities.Product(organization=module_org).create()
-    repo = entities.Repository(url=settings.repos.yum_1.url, product=product).create()
+    product = module_target_sat.api.Product(organization=module_org).create()
+    repo = module_target_sat.api.Repository(url=settings.repos.yum_1.url, product=product).create()
     with session:
         result = session.repository.synchronize(product.name, repo.name)
         assert result['result'] == 'success'
@@ -432,7 +411,7 @@ def test_positive_resync_custom_repo_after_invalid_update(session, module_org):
 
 @pytest.mark.tier2
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_resynchronize_rpm_repo(session, module_prod):
+def test_positive_resynchronize_rpm_repo(session, module_prod, module_target_sat):
     """Check that repository content is resynced after packages were removed
     from repository
 
@@ -440,11 +419,9 @@ def test_positive_resynchronize_rpm_repo(session, module_prod):
 
     :expectedresults: Repository has updated non-zero package count
 
-    :CaseLevel: Integration
-
     :BZ: 1318004
     """
-    repo = entities.Repository(
+    repo = module_target_sat.api.Repository(
         url=settings.repos.yum_1.url, content_type=REPO_TYPE['yum'], product=module_prod
     ).create()
     with session:
@@ -468,14 +445,12 @@ def test_positive_resynchronize_rpm_repo(session, module_prod):
 @pytest.mark.tier2
 @pytest.mark.upgrade
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_end_to_end_custom_yum_crud(session, module_org, module_prod):
+def test_positive_end_to_end_custom_yum_crud(session, module_org, module_prod, module_target_sat):
     """Perform end to end testing for custom yum repository
 
     :id: 8baf11c9-019e-4625-a549-ec4cd9312f75
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """
@@ -483,11 +458,13 @@ def test_positive_end_to_end_custom_yum_crud(session, module_org, module_prod):
     checksum_type = 'sha256'
     new_repo_name = gen_string('alphanumeric')
     new_checksum_type = 'sha1'
-    gpg_key = entities.GPGKey(
-        content=read_data_file(VALID_GPG_KEY_FILE), organization=module_org
+    gpg_key = module_target_sat.api.GPGKey(
+        content=DataFile.VALID_GPG_KEY_FILE.read_bytes(),
+        organization=module_org,
     ).create()
-    new_gpg_key = entities.GPGKey(
-        content=read_data_file(VALID_GPG_KEY_BETA_FILE), organization=module_org
+    new_gpg_key = module_target_sat.api.GPGKey(
+        content=DataFile.VALID_GPG_KEY_BETA_FILE.read_bytes(),
+        organization=module_org,
     ).create()
     with session:
         session.repository.create(
@@ -539,8 +516,6 @@ def test_positive_end_to_end_custom_module_streams_crud(session, module_org, mod
 
     :expectedresults: All expected CRUD actions finished successfully
 
-    :CaseLevel: Integration
-
     :CaseImportance: High
     """
     repo_name = gen_string('alpha')
@@ -584,8 +559,6 @@ def test_positive_upstream_with_credentials(session, module_prod):
         1. The custom repository is created with upstream credentials.
         2. The custom repository upstream credentials are updated.
         3. The credentials are cleared.
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
 
@@ -645,8 +618,7 @@ def test_positive_upstream_with_credentials(session, module_prod):
 #
 #     :expectedresults: All expected CRUD actions finished successfully
 #
-#     :CaseLevel: Integration
-#
+#     #
 #     :CaseImportance: High
 #
 #     :BZ: 1467722
@@ -659,19 +631,19 @@ def test_positive_upstream_with_credentials(session, module_prod):
 #             {
 #                 'name': repo_name,
 #                 'repo_type': REPO_TYPE['ostree'],
-#                 'repo_content.upstream_url': FEDORA26_OSTREE_REPO,
+#                 'repo_content.upstream_url': FEDORA_OSTREE_REPO,
 #             },
 #         )
 #         assert session.repository.search(module_prod.name, repo_name)[0]['Name'] == repo_name
 #         session.repository.update(
 #             module_prod.name,
 #             repo_name,
-#             {'name': new_repo_name, 'repo_content.upstream_url': FEDORA27_OSTREE_REPO},
+#             {'name': new_repo_name, 'repo_content.upstream_url': FEDORA_OSTREE_REPO},
 #         )
 #         assert not session.repository.search(module_prod.name, repo_name)
 #         repo_values = session.repository.read(module_prod.name, new_repo_name)
 #         assert repo_values['name'] == new_repo_name
-#         assert repo_values['repo_content']['upstream_url'] == FEDORA27_OSTREE_REPO
+#         assert repo_values['repo_content']['upstream_url'] == FEDORA_OSTREE_REPO
 #         session.repository.delete(module_prod.name, new_repo_name)
 #         assert not session.repository.search(module_prod.name, new_repo_name)
 
@@ -685,10 +657,7 @@ def test_positive_sync_ansible_collection_gallaxy_repo(session, module_prod):
 
     :expectedresults: All content synced successfully
 
-    :CaseLevel: Integration
-
     :CaseImportance: High
-
     """
     repo_name = f'gallaxy-{gen_string("alpha")}'
     requirements = '''
@@ -704,7 +673,7 @@ def test_positive_sync_ansible_collection_gallaxy_repo(session, module_prod):
             module_prod.name,
             {
                 'name': repo_name,
-                'repo_type': REPO_TYPE['ansible_collection'],
+                'repo_type': REPO_TYPE['ansible_collection'].replace('_', ' '),
                 'repo_content.requirements': requirements,
                 'repo_content.upstream_url': ANSIBLE_GALAXY,
             },
@@ -714,18 +683,39 @@ def test_positive_sync_ansible_collection_gallaxy_repo(session, module_prod):
 
 
 @pytest.mark.tier2
-def test_positive_reposet_disable(session, target_sat):
+def test_positive_no_errors_on_repo_scan(target_sat, function_sca_manifest_org):
+    """Scan repos for RHEL Server Extras, then check the production log
+    for a specific error
+
+    :id: 443bf4af-7f9a-48b8-8f98-fdb170e8ae88
+
+    :expectedresults: The specific error isn't contained in the prod log
+
+    :customerscenario: True
+
+    :BZ: 1994212
+    """
+    sat_rpm_extras = target_sat.cli_factory.RHELServerExtras(cdn=True)
+    with target_sat.ui_session() as session:
+        session.organization.select(function_sca_manifest_org.name)
+        session.redhatrepository.read(sat_rpm_extras.data['repository-set'])
+        result = target_sat.execute(
+            'grep "Failed at scanning for repository: undefined method '
+            '`resolve_substitutions\' for nil:NilClass" /var/log/foreman/production.log'
+        )
+        assert result.status == 1
+
+
+@pytest.mark.tier2
+def test_positive_reposet_disable(session, target_sat, function_entitlement_manifest_org):
     """Enable RH repo, sync it and then disable
 
     :id: de596c56-1327-49e8-86d5-a1ab907f26aa
 
     :expectedresults: RH repo was disabled
-
-    :CaseLevel: Integration
     """
-    org = entities.Organization().create()
-    manifests.upload_manifest_locked(org.id)
-    sat_tools_repo = target_sat.cli_factory.SatelliteToolsRepository(distro=DISTRO_RHEL7, cdn=True)
+    org = function_entitlement_manifest_org
+    sat_tools_repo = target_sat.cli_factory.SatelliteToolsRepository(distro='rhel7', cdn=True)
     repository_name = sat_tools_repo.data['repository']
     with session:
         session.organization.select(org.name)
@@ -746,7 +736,8 @@ def test_positive_reposet_disable(session, target_sat):
                 )
             ]
         )
-        assert results and all([result == 'Syncing Complete.' for result in results])
+        assert results
+        assert all([result == 'Syncing Complete.' for result in results])
         session.redhatrepository.disable(repository_name)
         assert not session.redhatrepository.search(
             f'name = "{repository_name}"', category='Enabled'
@@ -755,7 +746,9 @@ def test_positive_reposet_disable(session, target_sat):
 
 @pytest.mark.run_in_one_thread
 @pytest.mark.tier2
-def test_positive_reposet_disable_after_manifest_deleted(session, target_sat):
+def test_positive_reposet_disable_after_manifest_deleted(
+    session, function_entitlement_manifest_org, target_sat
+):
     """Enable RH repo and sync it. Remove manifest and then disable
     repository
 
@@ -766,13 +759,10 @@ def test_positive_reposet_disable_after_manifest_deleted(session, target_sat):
     :expectedresults: RH repo was disabled
 
     :BZ: 1344391
-
-    :CaseLevel: Integration
     """
-    org = entities.Organization().create()
-    manifests.upload_manifest_locked(org.id)
-    sub = entities.Subscription(organization=org)
-    sat_tools_repo = target_sat.cli_factory.SatelliteToolsRepository(distro=DISTRO_RHEL7, cdn=True)
+    org = function_entitlement_manifest_org
+    sub = target_sat.api.Subscription(organization=org)
+    sat_tools_repo = target_sat.cli_factory.SatelliteToolsRepository(distro='rhel7', cdn=True)
     repository_name = sat_tools_repo.data['repository']
     repository_name_orphaned = f'{repository_name} (Orphaned)'
     with session:
@@ -796,7 +786,8 @@ def test_positive_reposet_disable_after_manifest_deleted(session, target_sat):
                 )
             ]
         )
-        assert results and all([result == 'Syncing Complete.' for result in results])
+        assert results
+        assert all([result == 'Syncing Complete.' for result in results])
         # Delete manifest
         sub.delete_manifest(data={'organization_id': org.id})
         # Verify that the displayed repository name is correct
@@ -810,7 +801,7 @@ def test_positive_reposet_disable_after_manifest_deleted(session, target_sat):
 
 
 @pytest.mark.tier2
-def test_positive_delete_random_docker_repo(session, module_org):
+def test_positive_delete_random_docker_repo(session, module_org, module_target_sat):
     """Create Docker-type repositories on multiple products and
     delete a random repository from a random product.
 
@@ -818,13 +809,14 @@ def test_positive_delete_random_docker_repo(session, module_org):
 
     :expectedresults: Random repository can be deleted from random product
         without altering the other products.
-
-    :CaseLevel: Integration
     """
     entities_list = []
-    products = [entities.Product(organization=module_org).create() for _ in range(randint(2, 5))]
+    products = [
+        module_target_sat.api.Product(organization=module_org).create()
+        for _ in range(randint(2, 5))
+    ]
     for product in products:
-        repo = entities.Repository(
+        repo = module_target_sat.api.Repository(
             url=CONTAINER_REGISTRY_HUB, product=product, content_type=REPO_TYPE['docker']
         ).create()
         entities_list.append((product.name, repo.name))
@@ -839,7 +831,7 @@ def test_positive_delete_random_docker_repo(session, module_org):
 
 
 @pytest.mark.tier2
-def test_positive_delete_rhel_repo(session, module_org, target_sat):
+def test_positive_delete_rhel_repo(session, module_entitlement_manifest_org, target_sat):
     """Enable and sync a Red Hat Repository, and then delete it
 
     :id: e96f369d-3e58-4824-802e-0b7e99d6d207
@@ -848,17 +840,14 @@ def test_positive_delete_rhel_repo(session, module_org, target_sat):
 
     :expectedresults: Repository can be successfully deleted
 
-    :CaseLevel: Integration
-
     :BZ: 1152672
     """
 
-    manifests.upload_manifest_locked(module_org.id)
-    sat_tools_repo = target_sat.cli_factory.SatelliteToolsRepository(distro=DISTRO_RHEL7, cdn=True)
+    sat_tools_repo = target_sat.cli_factory.SatelliteToolsRepository(distro='rhel7', cdn=True)
     repository_name = sat_tools_repo.data['repository']
     product_name = sat_tools_repo.data['product']
     with session:
-        session.organization.select(module_org.name)
+        session.organization.select(module_entitlement_manifest_org.name)
         session.redhatrepository.enable(
             sat_tools_repo.data['repository-set'],
             sat_tools_repo.data['arch'],
@@ -876,7 +865,8 @@ def test_positive_delete_rhel_repo(session, module_org, target_sat):
                 )
             ]
         )
-        assert results and all([result == 'Syncing Complete.' for result in results])
+        assert results
+        assert all([result == 'Syncing Complete.' for result in results])
         session.repository.delete(product_name, repository_name)
         assert not session.redhatrepository.search(
             f'name = "{repository_name}"', category='Enabled'
@@ -887,7 +877,7 @@ def test_positive_delete_rhel_repo(session, module_org, target_sat):
 
 
 @pytest.mark.tier2
-def test_positive_recommended_repos(session, module_org):
+def test_positive_recommended_repos(session, module_entitlement_manifest_org):
     """list recommended repositories using
      On/Off 'Recommended Repositories' toggle.
 
@@ -898,13 +888,10 @@ def test_positive_recommended_repos(session, module_org):
            1. Shows repositories as per On/Off 'Recommended Repositories'.
            2. Check last Satellite version Capsule/Tools repos do not exist.
 
-    :CaseLevel: Integration
-
     :BZ: 1776108
     """
-    manifests.upload_manifest_locked(module_org.id)
     with session:
-        session.organization.select(module_org.name)
+        session.organization.select(module_entitlement_manifest_org.name)
         rrepos_on = session.redhatrepository.read(recommended_repo='on')
         assert REPOSET['rhel7'] in [repo['name'] for repo in rrepos_on]
         v = get_sat_version()
@@ -933,7 +920,7 @@ def test_positive_upload_resigned_rpm():
 
     :customerscenario: true
 
-    :Steps:
+    :steps:
         1. Buld or prepare an unsigned rpm.
         2. Create a gpg key.
         3. Use the gpg key to sign the rpm with sha1.
@@ -959,7 +946,7 @@ def test_positive_remove_srpm_change_checksum():
 
     :BZ: 1850914
 
-    :Steps:
+    :steps:
         1. Sync a repository that contains rpms and srpms and uses sha1 repodata.
         2. Re-sync the repository after an srpm has been removed and its repodata regenerated
            using sha256.
@@ -981,7 +968,7 @@ def test_positive_repo_discovery_change_ssl():
 
     :BZ: 1789848
 
-    :Steps:
+    :steps:
         1. Navigate to Content > Products > click on 'Repo Discovery'.
         2. Set the repository type to 'Yum Repositories'.
         3. Enter an upstream URL to discover and click on 'Discover'.
@@ -1005,7 +992,7 @@ def test_positive_remove_credentials(session, function_product, function_org, fu
 
     :customerscenario: true
 
-    :Steps:
+    :steps:
         1. Create a custom repository, with a repository type of 'yum' and an upstream username
         and password.
         3. Remove the saved credentials by clicking the delete icon next to the 'Upstream
@@ -1049,7 +1036,7 @@ def test_sync_status_persists_after_task_delete(session, module_prod, module_org
 
     :customerscenario: true
 
-    :Steps:
+    :steps:
         1. Sync a custom Repo.
         2. Navigate to Content > Sync Status. Assert status is Synced.
         3. Use foreman-rake console to delete the Sync task.
@@ -1068,7 +1055,7 @@ def test_sync_status_persists_after_task_delete(session, module_prod, module_org
         assert len(result) == 1
         assert result[0] == 'Syncing Complete.'
         # Get the UUID of the sync task.
-        search_result = wait_for_tasks(
+        search_result = target_sat.wait_for_tasks(
             search_query='label = Actions::Katello::Repository::Sync'
             f' and organization_id = {module_org.id}'
             f' and started_at >= "{timestamp}"',
@@ -1106,7 +1093,7 @@ def test_positive_sync_status_repo_display():
 
     :customerscenario: true
 
-    :Steps:
+    :steps:
         1. Import manifest and enable RHEL 8 repositories.
         2. Navigate to Content > Sync Status.
 
@@ -1127,7 +1114,7 @@ def test_positive_search_enabled_kickstart_repos():
 
     :BZ: 1724807, 1829817
 
-    :Steps:
+    :steps:
         1. Import a manifest
         2. Navigate to Content > Red Hat Repositories, and enable some kickstart repositories.
         3. In the search bar on the right side, select 'Enabled/Both'.
@@ -1150,7 +1137,7 @@ def test_positive_rpm_metadata_display():
 
     :BZ: 1904369
 
-    :Steps:
+    :steps:
         1. Enable and sync a repository, e.g.,
            'Red Hat Satellite Tools 6.9 for RHEL 7 Server RPMs x86_64'.
         2. Navigate to Content > Packages > click on a package in the repository (e.g.,
@@ -1180,8 +1167,8 @@ def test_positive_select_org_in_any_context():
 
     :BZ: 1860957
 
-    :Steps:
-        1. Set "Any Organization" and "Any Location" on top
+    :steps:
+        1. Set "Any organization" and "Any location" on top
         2. Click on Content -> "Sync Status"
         3. "Select an Organization" page will come up.
         4. Select organization in dropdown and press Select
@@ -1197,7 +1184,7 @@ def test_positive_select_org_in_any_context():
 @pytest.mark.tier2
 @pytest.mark.upgrade
 @pytest.mark.skipif((not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url')
-def test_positive_sync_repo_and_verify_checksum(session, module_org):
+def test_positive_sync_repo_and_verify_checksum(session, module_org, module_target_sat):
     """Tests that Verify Content Checksum succeeds when executing from the products page
 
     :id: 577be1f8-7510-49d2-8b33-600db60bd960
@@ -1206,14 +1193,14 @@ def test_positive_sync_repo_and_verify_checksum(session, module_org):
 
     :BZ: 1951626
 
-    :Steps:
+    :steps:
         1. Enable and sync repository
         2. Go to Products -> Select Action -> Verify Content Checksum
 
     :expectedresults: Verify Content Checksum task succeeds
     """
     repo_name = gen_string('alpha')
-    product = entities.Product(organization=module_org).create()
+    product = module_target_sat.api.Product(organization=module_org).create()
     with session:
         session.repository.create(
             product.name,
@@ -1226,3 +1213,98 @@ def test_positive_sync_repo_and_verify_checksum(session, module_org):
         session.repository.synchronize(product.name, repo_name)
         results = session.product.verify_content_checksum([product.name])
         assert results['task']['result'] == 'success'
+
+
+@pytest.mark.tier2
+def test_positive_sync_sha_repo(session, module_org, module_target_sat):
+    """Sync repository with 'sha' checksum, which uses 'sha1' in particular actually
+
+    :id: 6172035f-96c4-41e4-a79b-acfaa78ad734
+
+    :customerscenario: true
+
+    :BZ: 2024889
+
+    :SubComponent: Pulp
+    """
+    repo_name = gen_string('alpha')
+    product = module_target_sat.api.Product(organization=module_org).create()
+    with session:
+        session.repository.create(
+            product.name,
+            {
+                'name': repo_name,
+                'repo_type': REPO_TYPE['yum'],
+                'repo_content.upstream_url': CUSTOM_RPM_SHA,
+            },
+        )
+        result = session.repository.synchronize(product.name, repo_name)
+        assert result['result'] == 'success'
+
+
+@pytest.mark.tier2
+def test_positive_able_to_disable_and_enable_rhel_repos(
+    session, module_org_with_manifest, target_sat
+):
+    """Upstream repo name changes shouldn't negatively affect a user's ability
+    to enable or disable a repo
+
+    :id: 205a1c05-2ac8-4c60-8d09-016bbcfdf538
+
+    :expectedresults: User is able to enable and disable repos without issues.
+
+    :BZ: 1973329
+
+    :customerscenario: true
+
+    :CaseAutomation: Automated
+    """
+    # rhel7
+    rhel7_repo = target_sat.cli_factory.RHELRepository()
+    # enable rhel7 repo
+    rhel7_repo.create(module_org_with_manifest.id, synchronize=False)
+    rhel7_repo_name = rhel7_repo.data['repository']
+    # reable rhel8_baseos repo
+    target_sat.cli.RepositorySet.enable(
+        {
+            'basearch': constants.DEFAULT_ARCHITECTURE,
+            'name': REPOSET['rhel8_bos'],
+            'organization-id': module_org_with_manifest.id,
+            'product': PRDS['rhel8'],
+            'releasever': REPOS['rhel8_bos']['releasever'],
+        }
+    )
+    rhel8_bos_info = target_sat.cli.RepositorySet.info(
+        {
+            'name': REPOSET['rhel8_bos'],
+            'organization-id': module_org_with_manifest.id,
+            'product': PRDS['rhel8'],
+        }
+    )
+    rhel8_repo_set_name = rhel8_bos_info['enabled-repositories'][0]['name']
+    rhel8_repo_name = rhel8_bos_info['name']
+    with session:
+        # disable and re-enable rhel7
+        session.redhatrepository.disable(rhel7_repo_name)
+        assert not session.redhatrepository.search(
+            f'name = "{rhel7_repo_name}"', category='Enabled'
+        )
+        session.redhatrepository.enable(
+            rhel7_repo.data['repository-set'],
+            rhel7_repo.data['arch'],
+            version=rhel7_repo.data['releasever'],
+        )
+        assert session.redhatrepository.search(f'name = "{rhel7_repo_name}"', category='Enabled')
+        # disable and re-enable rhel8_bos
+        session.redhatrepository.disable(rhel8_repo_set_name)
+        assert not session.redhatrepository.search(
+            f'name = "{rhel8_repo_set_name}"', category='Enabled'
+        )
+        session.redhatrepository.enable(
+            rhel8_repo_name,
+            constants.DEFAULT_ARCHITECTURE,
+            version=REPOS['rhel8_bos']['version'],
+        )
+        assert session.redhatrepository.search(
+            f'name = "{rhel8_repo_set_name}"', category='Enabled'
+        )

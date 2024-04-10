@@ -4,45 +4,36 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: ContentViews
 
-:Assignee: ltran
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import random
 
+from fauxfactory import gen_integer, gen_string, gen_utf8
 import pytest
-from fauxfactory import gen_integer
-from fauxfactory import gen_string
-from fauxfactory import gen_utf8
-from nailgun import entities
 from requests.exceptions import HTTPError
 
-from robottelo import manifests
-from robottelo.api.utils import apply_package_filter
-from robottelo.api.utils import enable_rhrepo_and_fetchid
-from robottelo.api.utils import promote
-from robottelo.config import settings
-from robottelo.constants import CONTAINER_REGISTRY_HUB
-from robottelo.constants import CUSTOM_RPM_SHA_512_FEED_COUNT
-from robottelo.constants import FILTER_ERRATA_TYPE
-from robottelo.constants import PERMISSIONS
-from robottelo.constants import PRDS
-from robottelo.constants import REPOS
-from robottelo.constants import REPOSET
-from robottelo.constants.repos import CUSTOM_RPM_SHA_512
-from robottelo.constants.repos import FEDORA27_OSTREE_REPO
-from robottelo.datafactory import invalid_names_list
-from robottelo.datafactory import parametrized
-from robottelo.datafactory import valid_data_list
-from robottelo.helpers import get_nailgun_config
+from robottelo.config import settings, user_nailgun_config
+from robottelo.constants import (
+    CONTAINER_REGISTRY_HUB,
+    CUSTOM_RPM_SHA_512_FEED_COUNT,
+    FILTER_ERRATA_TYPE,
+    PERMISSIONS,
+    PRDS,
+    REPOS,
+    REPOSET,
+    DataFile,
+)
+from robottelo.constants.repos import CUSTOM_RPM_SHA_512, FEDORA_OSTREE_REPO
+from robottelo.utils.datafactory import (
+    invalid_names_list,
+    parametrized,
+    valid_data_list,
+)
 
 # Some tests repeatedly publish content views or promote content view versions.
 # How many times should that be done? A higher number means a more interesting
@@ -51,8 +42,8 @@ REPEAT = 3
 
 
 @pytest.fixture(scope='class')
-def class_cv(module_org):
-    return entities.ContentView(organization=module_org).create()
+def class_cv(module_org, class_target_sat):
+    return class_target_sat.api.ContentView(organization=module_org).create()
 
 
 @pytest.fixture(scope='class')
@@ -63,41 +54,63 @@ def class_published_cv(class_cv):
 
 @pytest.fixture(scope='class')
 def class_promoted_cv(class_published_cv, module_lce):
-    promote(class_published_cv.version[0], module_lce.id)
+    class_published_cv.version[0].promote(data={'environment_ids': module_lce.id})
     return class_published_cv.read()
 
 
 @pytest.fixture(scope='class')
-def class_cloned_cv(class_cv):
-    copied_cv_id = entities.ContentView(id=class_cv.id).copy(
+def class_cloned_cv(class_cv, class_target_sat):
+    copied_cv_id = class_target_sat.api.ContentView(id=class_cv.id).copy(
         data={'name': gen_string('alpha', gen_integer(3, 30))}
     )['id']
-    return entities.ContentView(id=copied_cv_id).read()
+    return class_target_sat.api.ContentView(id=copied_cv_id).read()
 
 
 @pytest.fixture(scope='class')
-def class_published_cloned_cv(class_cloned_cv):
+def class_published_cloned_cv(class_cloned_cv, class_target_sat):
     class_cloned_cv.publish()
-    return entities.ContentView(id=class_cloned_cv.id).read()
+    return class_target_sat.api.ContentView(id=class_cloned_cv.id).read()
 
 
 @pytest.fixture
-def content_view(module_org):
-    return entities.ContentView(organization=module_org).create()
+def content_view(module_org, module_target_sat):
+    return module_target_sat.api.ContentView(organization=module_org).create()
+
+
+def apply_package_filter(content_view, repo, package, target_sat, inclusion=True):
+    """Apply package filter on content view
+
+    :param content_view: entity content view
+    :param repo: entity repository
+    :param str package: package name to filter
+    :param bool inclusion: True/False based on include or exclude filter
+
+    :return list : list of content view versions
+    """
+    cv_filter = target_sat.api.RPMContentViewFilter(
+        content_view=content_view, inclusion=inclusion, repository=[repo]
+    ).create()
+    cv_filter_rule = target_sat.api.ContentViewFilterRule(
+        content_view_filter=cv_filter, name=package
+    ).create()
+    assert cv_filter.id == cv_filter_rule.content_view_filter.id
+    content_view.publish()
+    content_view = content_view.read()
+    return content_view.version[0].read()
 
 
 class TestContentView:
     @pytest.mark.upgrade
     @pytest.mark.tier3
-    def test_positive_subscribe_host(self, class_cv, class_promoted_cv, module_lce, module_org):
+    def test_positive_subscribe_host(
+        self, class_cv, class_promoted_cv, module_lce, module_org, module_target_sat
+    ):
         """Subscribe a host to a content view
 
         :id: b5a08369-bf92-48ab-b9aa-10f5b9774b79
 
         :expectedresults: It is possible to create a host and set its
             'content_view_id' facet attribute
-
-        :CaseLevel: Integration
 
         :CaseAutomation: Automated
 
@@ -110,15 +123,15 @@ class TestContentView:
         # Check that no host associated to just created content view
         assert class_cv.content_host_count == 0
         assert len(class_promoted_cv.version) == 1
-        host = entities.Host(
+        host = module_target_sat.api.Host(
             content_facet_attributes={
                 'content_view_id': class_cv.id,
                 'lifecycle_environment_id': module_lce.id,
             },
             organization=module_org.id,
         ).create()
-        assert host.content_facet_attributes['content_view_id'] == class_cv.id
-        assert host.content_facet_attributes['lifecycle_environment_id'] == module_lce.id
+        assert host.content_facet_attributes['content_view']['id'] == class_cv.id
+        assert host.content_facet_attributes['lifecycle_environment']['id'] == module_lce.id
         assert class_cv.read().content_host_count == 1
 
     @pytest.mark.tier2
@@ -132,15 +145,15 @@ class TestContentView:
         :expectedresults: Cloned content view can be published and promoted to
             the same environment as the original content view
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
-        promote(class_published_cloned_cv.read().version[0], module_lce.id)
+        class_published_cloned_cv.read().version[0].promote(data={'environment_ids': module_lce.id})
 
     @pytest.mark.upgrade
     @pytest.mark.tier2
-    def test_positive_clone_with_diff_env(self, module_org, class_published_cloned_cv):
+    def test_positive_clone_with_diff_env(
+        self, module_org, class_published_cloned_cv, module_target_sat
+    ):
         """attempt to create, publish and promote new content
         view based on existing view but promoted to a
         different environment
@@ -150,28 +163,24 @@ class TestContentView:
         :expectedresults: Cloned content view can be published and promoted to
             a different environment as the original content view
 
-        :CaseLevel: Integration
-
         :CaseImportance: Medium
         """
-        le_clone = entities.LifecycleEnvironment(organization=module_org).create()
-        promote(class_published_cloned_cv.read().version[0], le_clone.id)
+        le_clone = module_target_sat.api.LifecycleEnvironment(organization=module_org).create()
+        class_published_cloned_cv.read().version[0].promote(data={'environment_ids': le_clone.id})
 
     @pytest.mark.tier2
-    def test_positive_add_custom_content(self, module_product, module_org):
+    def test_positive_add_custom_content(self, module_product, module_org, module_target_sat):
         """Associate custom content in a view
 
         :id: db452e0c-0c17-40f2-bab4-8467e7a875f1
 
         :expectedresults: Custom content assigned and present in content view
 
-        :CaseLevel: Integration
-
         :CaseImportance: Critical
         """
-        yum_repo = entities.Repository(product=module_product).create()
+        yum_repo = module_target_sat.api.Repository(product=module_product).create()
         yum_repo.sync()
-        content_view = entities.ContentView(organization=module_org.id).create()
+        content_view = module_target_sat.api.ContentView(organization=module_org.id).create()
         assert len(content_view.repository) == 0
         content_view.repository = [yum_repo]
         content_view = content_view.update(['repository'])
@@ -182,18 +191,18 @@ class TestContentView:
     @pytest.mark.skipif(
         (not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url'
     )
-    def test_positive_add_custom_module_streams(self, content_view, module_product, module_org):
+    def test_positive_add_custom_module_streams(
+        self, content_view, module_product, module_org, module_target_sat
+    ):
         """Associate custom content (module streams) in a view
 
         :id: 9e4821cb-293a-4d84-bd1f-bb9fff36b143
 
         :expectedresults: Custom content (module streams) assigned and present in content view
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
-        yum_repo = entities.Repository(
+        yum_repo = module_target_sat.api.Repository(
             product=module_product, url=settings.repos.module_stream_1.url
         ).create()
         yum_repo.sync()
@@ -206,7 +215,9 @@ class TestContentView:
         assert repo.content_counts['module_stream'] == 7
 
     @pytest.mark.tier2
-    def test_negative_add_dupe_repos(self, content_view, module_product, module_org):
+    def test_negative_add_dupe_repos(
+        self, content_view, module_product, module_org, module_target_sat
+    ):
         """Attempt to associate the same repo multiple times within a
         content view
 
@@ -214,15 +225,13 @@ class TestContentView:
 
         :expectedresults: User cannot add repos multiple times to the view
 
-        :CaseLevel: Integration
-
         :CaseImportance: Low
         """
-        yum_repo = entities.Repository(product=module_product).create()
+        yum_repo = module_target_sat.api.Repository(product=module_product).create()
         yum_repo.sync()
         assert len(content_view.repository) == 0
+        content_view.repository = [yum_repo, yum_repo]
         with pytest.raises(HTTPError):
-            content_view.repository = [yum_repo, yum_repo]
             content_view.update(['repository'])
         assert len(content_view.read().repository) == 0
 
@@ -231,18 +240,16 @@ class TestContentView:
     @pytest.mark.skipif(
         (not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url'
     )
-    def test_positive_add_sha512_rpm(self, content_view, module_org):
+    def test_positive_add_sha512_rpm(self, content_view, module_org, module_target_sat):
         """Associate sha512 RPM content in a view
 
         :id: 1f473b02-5e2b-41ff-a706-c0635abc2476
 
         :expectedresults: Custom sha512 assigned and present in content view
 
-        :CaseLevel: Integration
-
         :CaseComponent: Pulp
 
-        :Assignee: ltran
+        :team: Rocket
 
         :CaseImportance: Medium
 
@@ -250,8 +257,10 @@ class TestContentView:
 
         :BZ: 1639406
         """
-        product = entities.Product(organization=module_org).create()
-        yum_sha512_repo = entities.Repository(product=product, url=CUSTOM_RPM_SHA_512).create()
+        product = module_target_sat.api.Product(organization=module_org).create()
+        yum_sha512_repo = module_target_sat.api.Repository(
+            product=product, url=CUSTOM_RPM_SHA_512
+        ).create()
         yum_sha512_repo.sync()
         repo_content = yum_sha512_repo.read()
         # Assert that the repository content was properly synced
@@ -275,7 +284,7 @@ class TestContentViewCreate:
 
     @pytest.mark.parametrize('composite', [True, False])
     @pytest.mark.tier1
-    def test_positive_create_composite(self, composite):
+    def test_positive_create_composite(self, composite, target_sat):
         """Create composite and non-composite content views.
 
         :id: 4a3b616d-53ab-4396-9a50-916d6c42a401
@@ -287,11 +296,11 @@ class TestContentViewCreate:
 
         :CaseImportance: Critical
         """
-        assert entities.ContentView(composite=composite).create().composite == composite
+        assert target_sat.api.ContentView(composite=composite).create().composite == composite
 
     @pytest.mark.parametrize('name', **parametrized(valid_data_list()))
     @pytest.mark.tier1
-    def test_positive_create_with_name(self, name):
+    def test_positive_create_with_name(self, name, target_sat):
         """Create empty content-view with random names.
 
         :id: 80d36498-2e71-4aa9-b696-f0a45e86267f
@@ -302,11 +311,11 @@ class TestContentViewCreate:
 
         :CaseImportance: Critical
         """
-        assert entities.ContentView(name=name).create().name == name
+        assert target_sat.api.ContentView(name=name).create().name == name
 
     @pytest.mark.parametrize('desc', **parametrized(valid_data_list()))
     @pytest.mark.tier1
-    def test_positive_create_with_description(self, desc):
+    def test_positive_create_with_description(self, desc, target_sat):
         """Create empty content view with random description.
 
         :id: 068e3e7c-34ac-47cb-a1bb-904d12c74cc7
@@ -317,10 +326,10 @@ class TestContentViewCreate:
 
         :CaseImportance: High
         """
-        assert entities.ContentView(description=desc).create().description == desc
+        assert target_sat.api.ContentView(description=desc).create().description == desc
 
     @pytest.mark.tier1
-    def test_positive_clone(self, content_view, module_org):
+    def test_positive_clone(self, content_view, module_org, module_target_sat):
         """Create a content view by copying an existing one
 
         :id: ee03dc63-e2b0-4a89-a828-2910405279ff
@@ -329,7 +338,7 @@ class TestContentViewCreate:
 
         :CaseImportance: Critical
         """
-        cloned_cv = entities.ContentView(
+        cloned_cv = module_target_sat.api.ContentView(
             id=content_view.copy(data={'name': gen_string('alpha', gen_integer(3, 30))})['id']
         ).read_json()
         cv_origin = content_view.read_json()
@@ -341,7 +350,7 @@ class TestContentViewCreate:
 
     @pytest.mark.parametrize('name', **parametrized(invalid_names_list()))
     @pytest.mark.tier1
-    def test_negative_create_with_invalid_name(self, name):
+    def test_negative_create_with_invalid_name(self, name, target_sat):
         """Create content view providing an invalid name.
 
         :id: 261376ca-7d12-41b6-9c36-5f284865243e
@@ -353,26 +362,25 @@ class TestContentViewCreate:
         :CaseImportance: High
         """
         with pytest.raises(HTTPError):
-            entities.ContentView(name=name).create()
+            target_sat.api.ContentView(name=name).create()
 
 
 class TestContentViewPublishPromote:
     """Tests for publishing and promoting content views."""
 
-    @pytest.mark.skipif(
-        (not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url'
-    )
     @pytest.fixture(scope='class', autouse=True)
-    def class_setup(self, request, module_product):
+    def class_setup(self, request, module_product, class_target_sat):
         """Set up organization, product and repositories for tests."""
-        request.cls.yum_repo = entities.Repository(product=module_product).create()
+        request.cls.yum_repo = class_target_sat.api.Repository(product=module_product).create()
         self.yum_repo.sync()
-        request.cls.swid_repo = entities.Repository(
+        request.cls.swid_repo = class_target_sat.api.Repository(
             product=module_product, url=settings.repos.swid_tag.url
         ).create()
         self.swid_repo.sync()
 
-    def add_content_views_to_composite(self, composite_cv, module_org, cv_amount=1):
+    def add_content_views_to_composite(
+        self, module_target_sat, composite_cv, module_org, cv_amount=1
+    ):
         """Add necessary number of content views to the composite one
 
         :param composite_cv: Composite content view object
@@ -380,7 +388,7 @@ class TestContentViewPublishPromote:
         """
         cv_versions = []
         for _ in range(cv_amount):
-            content_view = entities.ContentView(organization=module_org).create()
+            content_view = module_target_sat.api.ContentView(organization=module_org).create()
             content_view.publish()
             cv_versions.append(content_view.read().version[0])
         composite_cv.component = cv_versions
@@ -396,8 +404,6 @@ class TestContentViewPublishPromote:
         :expectedresults: The yum repo is referenced from the content view, the
             content view can be published several times, and each content view
             version has at least one package.
-
-        :CaseLevel: Integration
 
         :CaseImportance: High
         """
@@ -415,7 +421,7 @@ class TestContentViewPublishPromote:
             assert cvv.read_json()['package_count'] > 0
 
     @pytest.mark.tier2
-    def test_positive_publish_composite_multiple_content_once(self, module_org):
+    def test_positive_publish_composite_multiple_content_once(self, module_org, module_target_sat):
         """Create empty composite view and assign random number of
         normal content views to it. After that publish that composite content
         view once.
@@ -425,20 +431,22 @@ class TestContentViewPublishPromote:
         :expectedresults: Composite content view is published and corresponding
             version is assigned to it.
 
-        :CaseLevel: Integration
-
         :CaseImportance: Critical
         """
-        composite_cv = entities.ContentView(
+        composite_cv = module_target_sat.api.ContentView(
             composite=True,
             organization=module_org,
         ).create()
-        self.add_content_views_to_composite(composite_cv, module_org, random.randint(2, 3))
+        self.add_content_views_to_composite(
+            module_target_sat, composite_cv, module_org, random.randint(2, 3)
+        )
         composite_cv.publish()
         assert len(composite_cv.read().version) == 1
 
     @pytest.mark.tier2
-    def test_positive_publish_composite_multiple_content_multiple(self, module_org):
+    def test_positive_publish_composite_multiple_content_multiple(
+        self, module_org, module_target_sat
+    ):
         """Create empty composite view and assign random number of
         normal content views to it. After that publish that composite content
         view several times.
@@ -448,22 +456,22 @@ class TestContentViewPublishPromote:
         :expectedresults: Composite content view is published several times and
             corresponding versions are assigned to it.
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
-        composite_cv = entities.ContentView(
+        composite_cv = module_target_sat.api.ContentView(
             composite=True,
             organization=module_org,
         ).create()
-        self.add_content_views_to_composite(composite_cv, module_org, random.randint(2, 3))
+        self.add_content_views_to_composite(
+            module_target_sat, composite_cv, module_org, random.randint(2, 3)
+        )
 
         for i in range(random.randint(2, 3)):
             composite_cv.publish()
             assert len(composite_cv.read().version) == i + 1
 
     @pytest.mark.tier2
-    def test_positive_promote_with_yum_multiple(self, content_view, module_org):
+    def test_positive_promote_with_yum_multiple(self, content_view, module_org, module_target_sat):
         """Give a content view a yum repo, publish it once and promote
         the content view version ``REPEAT + 1`` times.
 
@@ -472,8 +480,6 @@ class TestContentViewPublishPromote:
         :expectedresults: The content view has one repository, the content view
             version is in ``REPEAT + 1`` lifecycle environments and it has at
             least one package.
-
-        :CaseLevel: Integration
 
         :CaseImportance: High
         """
@@ -484,8 +490,8 @@ class TestContentViewPublishPromote:
 
         # Promote the content view version.
         for _ in range(REPEAT):
-            lce = entities.LifecycleEnvironment(organization=module_org).create()
-            promote(content_view.version[0], lce.id)
+            lce = module_target_sat.api.LifecycleEnvironment(organization=module_org).create()
+            content_view.version[0].promote(data={'environment_ids': lce.id})
 
         # Everything's done - check some content view attributes...
         content_view = content_view.read()
@@ -498,7 +504,7 @@ class TestContentViewPublishPromote:
         assert cvv_attrs['package_count'] > 0
 
     @pytest.mark.tier2
-    def test_positive_add_to_composite(self, content_view, module_org):
+    def test_positive_add_to_composite(self, content_view, module_org, module_target_sat):
         """Create normal content view, publish and add it to a new
         composite content view
 
@@ -507,8 +513,6 @@ class TestContentViewPublishPromote:
         :expectedresults: Content view can be created and assigned to composite
             one through content view versions mechanism
 
-        :CaseLevel: Integration
-
         :CaseImportance: Critical
         """
         content_view.repository = [self.yum_repo]
@@ -516,7 +520,7 @@ class TestContentViewPublishPromote:
         content_view.publish()
         content_view = content_view.read()
 
-        composite_cv = entities.ContentView(
+        composite_cv = module_target_sat.api.ContentView(
             composite=True,
             organization=module_org,
         ).create()
@@ -529,7 +533,9 @@ class TestContentViewPublishPromote:
         assert composite_cv.component[0].read().content_view.id == content_view.id
 
     @pytest.mark.tier2
-    def test_negative_add_components_to_composite(self, content_view, module_org):
+    def test_negative_add_components_to_composite(
+        self, content_view, module_org, module_target_sat
+    ):
         """Attempt to associate components in a non-composite content
         view
 
@@ -537,15 +543,13 @@ class TestContentViewPublishPromote:
 
         :expectedresults: User cannot add components to the view
 
-        :CaseLevel: Integration
-
         :CaseImportance: Low
         """
         content_view.repository = [self.yum_repo]
         content_view.update(['repository'])
         content_view.publish()
         content_view = content_view.read()
-        non_composite_cv = entities.ContentView(
+        non_composite_cv = module_target_sat.api.ContentView(
             composite=False,
             organization=module_org,
         ).create()
@@ -556,7 +560,9 @@ class TestContentViewPublishPromote:
 
     @pytest.mark.upgrade
     @pytest.mark.tier2
-    def test_positive_promote_composite_multiple_content_once(self, module_lce, module_org):
+    def test_positive_promote_composite_multiple_content_once(
+        self, module_lce, module_org, module_target_sat
+    ):
         """Create empty composite view and assign random number of
         normal content views to it. After that promote that composite
         content view once.
@@ -566,24 +572,26 @@ class TestContentViewPublishPromote:
         :expectedresults: Composite content view version points to ``Library +
             1`` lifecycle environments after the promotions.
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
-        composite_cv = entities.ContentView(
+        composite_cv = module_target_sat.api.ContentView(
             composite=True,
             organization=module_org,
         ).create()
-        self.add_content_views_to_composite(composite_cv, module_org, random.randint(2, 3))
+        self.add_content_views_to_composite(
+            module_target_sat, composite_cv, module_org, random.randint(2, 3)
+        )
         composite_cv.publish()
-        promote(composite_cv.read().version[0], module_lce.id)
+        composite_cv.read().version[0].promote(data={'environment_ids': module_lce.id})
         composite_cv = composite_cv.read()
         assert len(composite_cv.version) == 1
         assert len(composite_cv.version[0].read().environment) == 2
 
     @pytest.mark.upgrade
     @pytest.mark.tier2
-    def test_positive_promote_composite_multiple_content_multiple(self, module_org):
+    def test_positive_promote_composite_multiple_content_multiple(
+        self, module_org, module_target_sat
+    ):
         """Create empty composite view and assign random number of
         normal content views to it. After that promote that composite content
         view ``Library + random`` times.
@@ -593,22 +601,22 @@ class TestContentViewPublishPromote:
         :expectedresults: Composite content view version points to ``Library +
             random`` lifecycle environments after the promotions.
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
-        composite_cv = entities.ContentView(
+        composite_cv = module_target_sat.api.ContentView(
             composite=True,
             organization=module_org,
         ).create()
-        self.add_content_views_to_composite(composite_cv, module_org, random.randint(2, 3))
+        self.add_content_views_to_composite(
+            module_target_sat, composite_cv, module_org, random.randint(2, 3)
+        )
         composite_cv.publish()
         composite_cv = composite_cv.read()
 
         envs_amount = random.randint(2, 3)
         for _ in range(envs_amount):
-            lce = entities.LifecycleEnvironment(organization=module_org).create()
-            promote(composite_cv.version[0], lce.id)
+            lce = module_target_sat.api.LifecycleEnvironment(organization=module_org).create()
+            composite_cv.version[0].promote(data={'environment_ids': lce.id})
         composite_cv = composite_cv.read()
         assert len(composite_cv.version) == 1
         assert len(composite_cv.version[0].read().environment) == envs_amount + 1
@@ -621,8 +629,6 @@ class TestContentViewPublishPromote:
         :id: 40d20aba-726f-48e3-93b7-fb1ab1851ac7
 
         :expectedresults: Content view promoted out of sequence properly
-
-        :CaseLevel: Integration
 
         :CaseImportance: Medium
         """
@@ -641,7 +647,7 @@ class TestContentViewPublishPromote:
         assert len(lce_list) == 1
         # Trying to re-promote 'Library' environment from latest version to
         # first one
-        promote(content_view.version[0], lce_list[0].id, force=True)
+        content_view.version[0].promote(data={'environment_ids': lce_list[0].id, 'force': True})
         content_view = content_view.read()
         content_view.version.sort(key=lambda version: version.id)
         # Verify that, according to our plan, first version contains one
@@ -651,18 +657,16 @@ class TestContentViewPublishPromote:
 
     @pytest.mark.tier3
     @pytest.mark.pit_server
-    def test_positive_publish_multiple_repos(self, content_view, module_org):
+    def test_positive_publish_multiple_repos(self, content_view, module_org, module_target_sat):
         """Attempt to publish a content view with multiple YUM repos.
 
         :id: 5557a33b-7a6f-45f5-9fe4-23a704ed9e21
 
         :expectedresults: Content view publish should not raise an exception.
 
-        :CaseLevel: Integration
-
         :CaseComponent: Pulp
 
-        :Assignee: ltran
+        :team: Rocket
 
         :CaseImportance: Medium
 
@@ -670,9 +674,9 @@ class TestContentViewPublishPromote:
 
         :BZ: 1651930
         """
-        product = entities.Product(organization=module_org).create()
+        product = module_target_sat.api.Product(organization=module_org).create()
         for _ in range(10):
-            repo = entities.Repository(product=product).create()
+            repo = module_target_sat.api.Repository(product=product).create()
             repo.sync()
             content_view.repository.append(repo)
             content_view = content_view.update(['repository'])
@@ -701,23 +705,25 @@ class TestContentViewPublishPromote:
 
         :CaseImportance: Medium
         """
-        product = entities.Product(organization=module_org).create()
-        repo = entities.Repository(
+        product = target_sat.api.Product(organization=module_org).create()
+        repo = target_sat.api.Repository(
             content_type='yum', product=product, url=settings.repos.module_stream_1.url
         ).create()
         repo.sync()
-        content_view_1 = entities.ContentView(organization=module_org).create()
-        content_view_2 = entities.ContentView(organization=module_org).create()
+        content_view_1 = target_sat.api.ContentView(organization=module_org).create()
+        content_view_2 = target_sat.api.ContentView(organization=module_org).create()
 
         # create content views with same repo and different filter
         for content_view, package in [(content_view_1, 'camel'), (content_view_2, 'cow')]:
             content_view.repository = [repo]
             content_view.update(['repository'])
-            content_view_info = apply_package_filter(content_view, repo, package, inclusion=False)
+            content_view_info = apply_package_filter(
+                content_view, repo, package, target_sat, inclusion=False
+            )
             assert content_view_info.package_count == 35
 
         # create composite content view with these two published content views
-        comp_content_view = entities.ContentView(
+        comp_content_view = target_sat.api.ContentView(
             composite=True,
             organization=module_org,
         ).create()
@@ -731,12 +737,106 @@ class TestContentViewPublishPromote:
         comp_content_view_info = comp_content_view.version[0].read()
         assert comp_content_view_info.package_count == 36
 
+    @pytest.mark.e2e
+    @pytest.mark.tier2
+    def test_ccv_audit_scenarios(self, module_org, target_sat):
+        """Check for various scenarios where a composite content view or it's component
+        content views needs_publish flags should be set to true and that they properly
+        get set and unset
+
+        :id: cdd94ab8-da31-40ac-ab81-02472517e9bf
+
+        :steps:
+
+            1. Create a ccv
+            2. Add some content views to the composite view
+            3. Remove a content view from the composite view
+            4. Add a CV that has `latest` set to true to the composite view
+            5. Publish a new version of that CV
+            6. Publish a new version of another CV in the CCV, and update it to latest
+
+        :expectedresults: When appropriate, a ccv and it's cvs needs_publish flags get
+            set or unset
+
+        :CaseImportance: High
+        """
+        composite_cv = target_sat.api.ContentView(composite=True).create()
+        # Needs_publish is set to True on creation
+        assert composite_cv.read().needs_publish
+        composite_cv.publish()
+        assert not composite_cv.read().needs_publish
+        # Add some content_views to the composite view
+        self.add_content_views_to_composite(target_sat, composite_cv, module_org, 2)
+        # Needs_publish should be set to True when a component CV is added/removed
+        assert composite_cv.read().needs_publish
+        composite_cv.publish()
+        assert not composite_cv.read().needs_publish
+        component_cvs = composite_cv.read().component
+        # Remove a component cv, should need publish now
+        component_cvs.pop(1)
+        composite_cv.component = component_cvs
+        composite_cv = composite_cv.update(['component'])
+        assert composite_cv.read().needs_publish
+        composite_cv.publish()
+        assert not composite_cv.read().needs_publish
+        # add a CV that has `latest` set to true
+        new_cv = target_sat.api.ContentView().create()
+        new_cv.publish()
+        composite_cv.content_view_component[0].add(
+            data={"components": [{"content_view_id": new_cv.id, "latest": "true"}]}
+        )
+        assert composite_cv.read().needs_publish
+        composite_cv.publish()
+        assert not composite_cv.read().needs_publish
+        # a new version of a component cv that has "latest" - needs publish
+        new_cv.publish()
+        assert composite_cv.read().needs_publish
+        composite_cv.publish()
+        assert not composite_cv.read().needs_publish
+        # a component CV was changed to "always update" when ccv has old version - needs publish
+        # update composite_cv after changes
+        composite_cv = composite_cv.read()
+        # get the first CV that was added, which has 1 version
+        old_component = composite_cv.content_view_component[0].read()
+        old_component.content_view.publish()
+        old_component.latest = True
+        old_component = old_component.update(['latest'])
+        # set latest to true and see if CV needs publish
+        assert composite_cv.read().needs_publish
+        composite_cv.publish()
+        assert not composite_cv.read().needs_publish
+
+    @pytest.mark.tier2
+    def test_check_needs_publish_flag(self, target_sat):
+        """Check that the publish_only_if_needed option in the API works as intended (defaults to
+        false, is able to be overriden to true, and if so gives the appropriate message
+        if the cvs needs_publish flag is set to false)
+
+        :id: 6e4aa845-db08-4cc3-a960-ea64fb20f50c
+
+        :expectedresults: The publish_only_if_needed flag is working as intended, and is defaulted
+            to false
+
+        :CaseImportance: High
+        """
+        cv = target_sat.api.ContentView().create()
+        assert cv.publish()
+        assert not cv.read().needs_publish
+        with pytest.raises(HTTPError):
+            assert (
+                cv.publish(data={'publish_only_if_needed': True})['displayMessage']
+                == """
+            Content view does not need a publish since there are no audited changes since the
+            last publish. Pass check_needs_publish parameter as false if you don't want to check
+            if content view needs a publish."""
+            )
+
 
 class TestContentViewUpdate:
     """Tests for updating content views."""
 
     @pytest.mark.parametrize(
-        'key, value',
+        ('key', 'value'),
         **(lambda x: {'argvalues': list(x.items()), 'ids': list(x.keys())})(
             {'description': gen_utf8(), 'name': gen_utf8()}
         ),
@@ -759,7 +859,7 @@ class TestContentViewUpdate:
 
     @pytest.mark.parametrize('new_name', **parametrized(valid_data_list()))
     @pytest.mark.tier1
-    def test_positive_update_name(self, module_cv, new_name):
+    def test_positive_update_name(self, module_cv, new_name, module_target_sat):
         """Create content view providing the initial name, then update
         its name to another valid name.
 
@@ -773,12 +873,12 @@ class TestContentViewUpdate:
         """
         module_cv.name = new_name
         module_cv.update(['name'])
-        updated = entities.ContentView(id=module_cv.id).read()
+        updated = module_target_sat.api.ContentView(id=module_cv.id).read()
         assert new_name == updated.name
 
     @pytest.mark.parametrize('new_name', **parametrized(invalid_names_list()))
     @pytest.mark.tier1
-    def test_negative_update_name(self, module_cv, new_name):
+    def test_negative_update_name(self, module_cv, new_name, module_target_sat):
         """Create content view then update its name to an
         invalid name.
 
@@ -790,8 +890,8 @@ class TestContentViewUpdate:
 
         :CaseImportance: Critical
         """
+        module_cv.name = new_name
         with pytest.raises(HTTPError):
-            module_cv.name = new_name
             module_cv.update(['name'])
         cv = module_cv.read()
         assert cv.name != new_name
@@ -802,7 +902,7 @@ class TestContentViewDelete:
 
     @pytest.mark.parametrize('name', **parametrized(valid_data_list()))
     @pytest.mark.tier1
-    def test_positive_delete(self, content_view, name):
+    def test_positive_delete(self, content_view, name, target_sat):
         """Create content view and then delete it.
 
         :id: d582f1b3-8118-4e78-a639-237c6f9d27c6
@@ -815,32 +915,28 @@ class TestContentViewDelete:
         """
         content_view.delete()
         with pytest.raises(HTTPError):
-            entities.ContentView(id=content_view.id).read()
+            target_sat.api.ContentView(id=content_view.id).read()
 
 
 @pytest.mark.run_in_one_thread
 class TestContentViewRedHatContent:
     """Tests for publishing and promoting content views."""
 
-    @pytest.mark.skip_if_not_set('fake_manifest')
     @pytest.fixture(scope='class', autouse=True)
-    def initiate_testclass(self, request, module_org, module_cv):
+    def initiate_testclass(
+        self, request, module_cv, module_entitlement_manifest_org, class_target_sat
+    ):
         """Set up organization, product and repositories for tests."""
 
-        with manifests.clone() as manifest:
-            entities.Subscription().upload(
-                data={'organization_id': module_org.id},
-                files={'content': manifest.content},
-            )
-        repo_id = enable_rhrepo_and_fetchid(
+        repo_id = class_target_sat.api_factory.enable_rhrepo_and_fetchid(
             basearch='x86_64',
-            org_id=module_org.id,
+            org_id=module_entitlement_manifest_org.id,
             product=PRDS['rhel'],
             repo=REPOS['rhst7']['name'],
             reposet=REPOSET['rhst7'],
             releasever=None,
         )
-        request.cls.repo = entities.Repository(id=repo_id)
+        request.cls.repo = class_target_sat.api.Repository(id=repo_id)
         self.repo.sync()
         module_cv.repository = [self.repo]
         module_cv.update(['repository'])
@@ -854,15 +950,13 @@ class TestContentViewRedHatContent:
 
         :expectedresults: RH Content assigned and present in a view
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         assert len(self.yumcv.repository) == 1
         assert self.yumcv.repository[0].read().name == REPOS['rhst7']['name']
 
     @pytest.mark.tier2
-    def test_positive_add_rh_custom_spin(self):
+    def test_positive_add_rh_custom_spin(self, target_sat):
         """Associate Red Hat content in a view and filter it using rule
 
         :id: 30c3103d-9503-4501-8117-1f2d25353215
@@ -870,12 +964,10 @@ class TestContentViewRedHatContent:
         :expectedresults: Filtered RH content is available and can be seen in a
             view
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         # content_view ← cv_filter
-        cv_filter = entities.RPMContentViewFilter(
+        cv_filter = target_sat.api.RPMContentViewFilter(
             content_view=self.yumcv,
             inclusion='true',
             name=gen_string('alphanumeric'),
@@ -883,13 +975,13 @@ class TestContentViewRedHatContent:
         assert self.yumcv.id == cv_filter.content_view.id
 
         # content_view ← cv_filter ← cv_filter_rule
-        cv_filter_rule = entities.ContentViewFilterRule(
+        cv_filter_rule = target_sat.api.ContentViewFilterRule(
             content_view_filter=cv_filter, name=gen_string('alphanumeric'), version='1.0'
         ).create()
         assert cv_filter.id == cv_filter_rule.content_view_filter.id
 
     @pytest.mark.tier2
-    def test_positive_update_rh_custom_spin(self):
+    def test_positive_update_rh_custom_spin(self, target_sat):
         """Edit content views for a custom rh spin.  For example,
         modify a filter
 
@@ -898,16 +990,14 @@ class TestContentViewRedHatContent:
         :expectedresults: edited content view save is successful and info is
             updated
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
-        cvf = entities.ErratumContentViewFilter(
+        cvf = target_sat.api.ErratumContentViewFilter(
             content_view=self.yumcv,
         ).create()
         assert self.yumcv.id == cvf.content_view.id
 
-        cv_filter_rule = entities.ContentViewFilterRule(
+        cv_filter_rule = target_sat.api.ContentViewFilterRule(
             content_view_filter=cvf, types=[FILTER_ERRATA_TYPE['enhancement']]
         ).create()
         assert cv_filter_rule.types == [FILTER_ERRATA_TYPE['enhancement']]
@@ -924,8 +1014,6 @@ class TestContentViewRedHatContent:
 
         :expectedresults: Content view can be published
 
-        :CaseLevel: Integration
-
         :CaseImportance: Critical
         """
         content_view.repository = [self.repo]
@@ -934,7 +1022,7 @@ class TestContentViewRedHatContent:
         assert len(content_view.read().version) == 1
 
     @pytest.mark.tier2
-    def test_positive_publish_rh_custom_spin(self, module_org, content_view):
+    def test_positive_publish_rh_custom_spin(self, module_org, content_view, module_target_sat):
         """Attempt to publish a content view containing Red Hat spin - i.e.,
         contains filters.
 
@@ -942,13 +1030,11 @@ class TestContentViewRedHatContent:
 
         :expectedresults: Content view can be published
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         content_view.repository = [self.repo]
         content_view = content_view.update(['repository'])
-        entities.RPMContentViewFilter(
+        module_target_sat.api.RPMContentViewFilter(
             content_view=content_view, inclusion='true', name=gen_string('alphanumeric')
         ).create()
         content_view.publish()
@@ -962,19 +1048,22 @@ class TestContentViewRedHatContent:
 
         :expectedresults: Content view can be promoted
 
-        :CaseLevel: Integration
-
         :CaseImportance: Critical
         """
         content_view.repository = [self.repo]
         content_view = content_view.update(['repository'])
         content_view.publish()
-        promote(content_view.read().version[0], module_lce.id)
+        content_view.read().version[0].promote(
+            data={
+                'environment_ids': module_lce.id,
+                'force': False,
+            }
+        )
         assert len(content_view.read().version[0].read().environment) == 2
 
     @pytest.mark.upgrade
     @pytest.mark.tier2
-    def test_positive_promote_rh_custom_spin(self, content_view, module_lce):
+    def test_positive_promote_rh_custom_spin(self, content_view, module_lce, module_target_sat):
         """Attempt to promote a content view containing Red Hat spin - i.e.,
         contains filters.
 
@@ -982,22 +1071,108 @@ class TestContentViewRedHatContent:
 
         :expectedresults: Content view can be promoted
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         content_view.repository = [self.repo]
         content_view = content_view.update(['repository'])
-        entities.RPMContentViewFilter(
+        module_target_sat.api.RPMContentViewFilter(
             content_view=content_view, inclusion='true', name=gen_string('alphanumeric')
         ).create()
         content_view.publish()
-        promote(content_view.read().version[0], module_lce.id)
+        content_view.read().version[0].promote(data={'environment_ids': module_lce.id})
         assert len(content_view.read().version[0].read().environment) == 2
+
+    @pytest.mark.e2e
+    @pytest.mark.tier2
+    def test_cv_audit_scenarios(self, module_product, target_sat):
+        """Check for various scenarios where a content view's needs_publish flag
+        should be set to true and that it properly gets set and unset
+
+        :id: 48b0ce35-f76b-447e-a465-d9ce70cbb20e`
+
+        :steps:
+
+            1. Create a CV
+            2. Add a filter to the CV
+            3. Add a rule to the filter
+            4. Delete that rule
+            5. Delete that filter
+            6. Add a repo to the CV
+            7. Delete content from the repo
+            8. Add content to the repo
+            9. Sync the repo
+
+        :expectedresults: All of the above steps should results in the CV needing to be
+            be published
+
+        :CaseImportance: High
+        """
+        # needs_publish is set to true when created
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
+        # needs_publish is set to true when a filter is added/updated/deleted
+        cv_filter = target_sat.api.RPMContentViewFilter(
+            content_view=self.yumcv, inclusion='true', name=gen_string('alphanumeric')
+        ).create()
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
+        # Adding a rule should set needs_publish to true
+        cvf_rule = target_sat.api.ContentViewFilterRule(
+            content_view_filter=cv_filter, name=gen_string('alphanumeric'), version='1.0'
+        ).create()
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
+        # Deleting a rule should set needs_publish to true
+        cvf_rule.delete()
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
+        # Deleting a filter should set needs_publish to true
+        cv_filter.delete()
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
+        # needs_publish is set to true whenever repositories are interacted with on the CV
+        # add a repo to the CV, needs_publish should be set to true
+        repo_url = settings.repos.yum_0.url
+        repo = target_sat.api.Repository(
+            download_policy='immediate',
+            mirroring_policy='mirror_complete',
+            product=module_product,
+            url=repo_url,
+        ).create()
+        repo.sync()
+        self.yumcv.repository = [repo]
+        self.yumcv = self.yumcv.update(['repository'])
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
+        # needs_publish is set to true when repository content is removed
+        packages = target_sat.api.Package(repository=repo).search(query={'per_page': '1000'})
+        repo.remove_content(data={'ids': [package.id for package in packages]})
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
+        # needs_publish is set to true whenever repo content is added
+        with open(DataFile.RPM_TO_UPLOAD, 'rb') as handle:
+            repo.upload_content(files={'content': handle})
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
+        # needs_publish is set to true whenever a repo is synced
+        repo.sync()
+        assert self.yumcv.read().needs_publish
+        self.yumcv.publish()
+        assert not self.yumcv.read().needs_publish
 
 
 @pytest.mark.tier2
-def test_positive_admin_user_actions(content_view, function_role, module_org, module_lce):
+def test_positive_admin_user_actions(
+    target_sat, content_view, function_role, module_org, module_lce
+):
     """Attempt to manage content views
 
     :id: 75b638af-d132-4b5e-b034-a373565c72b4
@@ -1013,50 +1188,51 @@ def test_positive_admin_user_actions(content_view, function_role, module_org, mo
     :expectedresults: The user can Read, Modify, Delete, Publish, Promote
         the content views
 
-    :CaseLevel: Integration
-
     :CaseImportance: Critical
     """
     user_login = gen_string('alpha')
     user_password = gen_string('alphanumeric')
     # create a role with all content views permissions
     for res_type in ['Katello::ContentView', 'Katello::KTEnvironment']:
-        permission = entities.Permission().search(query={'search': f'resource_type="{res_type}"'})
-        entities.Filter(
+        permission = target_sat.api.Permission().search(
+            query={'search': f'resource_type="{res_type}"'}
+        )
+        target_sat.api.Filter(
             organization=[module_org], permission=permission, role=function_role
         ).create()
     # create a user and assign the above created role
-    entities.User(
+    target_sat.api.User(
         organization=[module_org],
         role=[function_role],
         login=user_login,
         password=user_password,
     ).create()
-    cfg = get_nailgun_config()
-    cfg.auth = (user_login, user_password)
+    cfg = user_nailgun_config(user_login, user_password)
     # Check that we cannot create random entity due permission restriction
     with pytest.raises(HTTPError):
-        entities.Domain(cfg).create()
+        target_sat.api.Domain(server_config=cfg).create()
     # Check Read functionality
-    content_view = entities.ContentView(cfg, id=content_view.id).read()
+    content_view = target_sat.api.ContentView(server_config=cfg, id=content_view.id).read()
     # Check Modify functionality
-    entities.ContentView(cfg, id=content_view.id, name=gen_string('alpha')).update(['name'])
+    target_sat.api.ContentView(
+        server_config=cfg, id=content_view.id, name=gen_string('alpha')
+    ).update(['name'])
     # Publish the content view.
     content_view.publish()
     content_view = content_view.read()
     assert len(content_view.version) == 1
     # Promote the content view version.
-    promote(content_view.version[0], module_lce.id)
+    content_view.version[0].promote(data={'environment_ids': module_lce.id})
     # Check Delete functionality
-    content_view = entities.ContentView(organization=module_org).create()
-    content_view = entities.ContentView(cfg, id=content_view.id).read()
+    content_view = target_sat.api.ContentView(organization=module_org).create()
+    content_view = target_sat.api.ContentView(server_config=cfg, id=content_view.id).read()
     content_view.delete()
     with pytest.raises(HTTPError):
         content_view.read()
 
 
 @pytest.mark.tier2
-def test_positive_readonly_user_actions(function_role, content_view, module_org):
+def test_positive_readonly_user_actions(target_sat, function_role, content_view, module_org):
     """Attempt to view content views
 
     :id: cdfd6e51-cd46-4afa-807c-98b2195fcf0e
@@ -1070,55 +1246,54 @@ def test_positive_readonly_user_actions(function_role, content_view, module_org)
     :expectedresults: User with read-only role for content view can view
         the repository in the content view
 
-    :CaseLevel: Integration
-
     :CaseImportance: Critical
     """
     user_login = gen_string('alpha')
     user_password = gen_string('alphanumeric')
     # create a role with content views read only permissions
-    entities.Filter(
+    target_sat.api.Filter(
         organization=[module_org],
-        permission=entities.Permission().search(
+        permission=target_sat.api.Permission().search(
             filters={'name': 'view_content_views'},
             query={'search': 'resource_type="Katello::ContentView"'},
         ),
         role=function_role,
     ).create()
     # create read only products permissions and assign it to our role
-    entities.Filter(
+    target_sat.api.Filter(
         organization=[module_org],
-        permission=entities.Permission().search(
+        permission=target_sat.api.Permission().search(
             filters={'name': 'view_products'},
             query={'search': 'resource_type="Katello::Product"'},
         ),
         role=function_role,
     ).create()
     # create a user and assign the above created role
-    entities.User(
+    target_sat.api.User(
         organization=[module_org],
         role=[function_role],
         login=user_login,
         password=user_password,
     ).create()
     # add repository to the created content view
-    product = entities.Product(organization=module_org).create()
-    yum_repo = entities.Repository(product=product).create()
+    product = target_sat.api.Product(organization=module_org).create()
+    yum_repo = target_sat.api.Repository(product=product).create()
     yum_repo.sync()
     content_view.repository = [yum_repo]
     content_view = content_view.update(['repository'])
     assert len(content_view.repository) == 1
-    cfg = get_nailgun_config()
-    cfg.auth = (user_login, user_password)
+    cfg = user_nailgun_config(user_login, user_password)
     # Check that we can read content view repository information using user
     # with read only permissions
-    content_view = entities.ContentView(cfg, id=content_view.id).read()
+    content_view = target_sat.api.ContentView(server_config=cfg, id=content_view.id).read()
     assert len(content_view.repository) == 1
     assert content_view.repository[0].read().name == yum_repo.name
 
 
 @pytest.mark.tier2
-def test_negative_readonly_user_actions(function_role, content_view, module_org, module_lce):
+def test_negative_readonly_user_actions(
+    target_sat, function_role, content_view, module_org, module_lce
+):
     """Attempt to manage content views
 
     :id: 8c8cc3a2-a356-4645-9517-ca5bce836969
@@ -1135,46 +1310,45 @@ def test_negative_readonly_user_actions(function_role, content_view, module_org,
 
     :BZ: 1922134
 
-    :CaseLevel: Integration
-
     :CaseImportance: Critical
     """
     user_login = gen_string('alpha')
     user_password = gen_string('alphanumeric')
     # create a role with content views read only permissions
-    entities.Filter(
+    target_sat.api.Filter(
         organization=[module_org],
-        permission=entities.Permission().search(
+        permission=target_sat.api.Permission().search(
             filters={'name': 'view_content_views'},
             query={'search': 'resource_type="Katello::ContentView"'},
         ),
         role=function_role,
     ).create()
     # create environment permissions and assign it to our role
-    entities.Filter(
+    target_sat.api.Filter(
         organization=[module_org],
-        permission=entities.Permission().search(
+        permission=target_sat.api.Permission().search(
             query={'search': 'resource_type="Katello::KTEnvironment"'}
         ),
         role=function_role,
     ).create()
     # create a user and assign the above created role
-    entities.User(
+    target_sat.api.User(
         organization=[module_org],
         role=[function_role],
         login=user_login,
         password=user_password,
     ).create()
-    cfg = get_nailgun_config()
-    cfg.auth = (user_login, user_password)
+    cfg = user_nailgun_config(user_login, user_password)
     # Check that we cannot create content view due read-only permission
     with pytest.raises(HTTPError):
-        entities.ContentView(cfg, organization=module_org).create()
+        target_sat.api.ContentView(server_config=cfg, organization=module_org).create()
     # Check that we can read our content view with custom user
-    content_view = entities.ContentView(cfg, id=content_view.id).read()
+    content_view = target_sat.api.ContentView(server_config=cfg, id=content_view.id).read()
     # Check that we cannot modify content view with custom user
     with pytest.raises(HTTPError):
-        entities.ContentView(cfg, id=content_view.id, name=gen_string('alpha')).update(['name'])
+        target_sat.api.ContentView(
+            server_config=cfg, id=content_view.id, name=gen_string('alpha')
+        ).update(['name'])
     # Check that we cannot delete content view due read-only permission
     with pytest.raises(HTTPError):
         content_view.delete()
@@ -1182,25 +1356,25 @@ def test_negative_readonly_user_actions(function_role, content_view, module_org,
     with pytest.raises(HTTPError):
         content_view.publish()
     # Check that we cannot promote content view
-    content_view = entities.ContentView(id=content_view.id).read()
+    content_view = target_sat.api.ContentView(id=content_view.id).read()
     content_view.publish()
-    content_view = entities.ContentView(cfg, id=content_view.id).read()
+    content_view = target_sat.api.ContentView(server_config=cfg, id=content_view.id).read()
     assert len(content_view.version), 1
     with pytest.raises(HTTPError):
-        promote(content_view.version[0], module_lce.id)
+        content_view.read().version[0].promote(data={'environment_ids': module_lce.id})
     # Check that we cannot create a Product
     with pytest.raises(HTTPError):
-        entities.Product(cfg).create()
+        target_sat.api.Product(server_config=cfg).create()
     # Check that we cannot create an activation key
     with pytest.raises(HTTPError):
-        entities.ActivationKey(cfg).create()
+        target_sat.api.ActivationKey(server_config=cfg).create()
     # Check that we cannot create a host collection
     with pytest.raises(HTTPError):
-        entities.HostCollection(cfg).create()
+        target_sat.api.HostCollection(server_config=cfg).create()
 
 
 @pytest.mark.tier2
-def test_negative_non_readonly_user_actions(content_view, function_role, module_org):
+def test_negative_non_readonly_user_actions(target_sat, content_view, function_role, module_org):
     """Attempt to view content views
 
     :id: b0a53c38-72f1-4731-881e-192134df6ef3
@@ -1211,15 +1385,13 @@ def test_negative_non_readonly_user_actions(content_view, function_role, module_
     :expectedresults: the user can perform different operations against
         content view, but not read it
 
-    :CaseLevel: Integration
-
     :CaseImportance: Critical
     """
     user_login = gen_string('alpha')
     user_password = gen_string('alphanumeric')
     # create a role with all content views permissions except
     # view_content_views
-    cv_permissions_entities = entities.Permission().search(
+    cv_permissions_entities = target_sat.api.Permission().search(
         query={'search': 'resource_type="Katello::ContentView"'}
     )
     user_cv_permissions = list(PERMISSIONS['Katello::ContentView'])
@@ -1227,54 +1399,50 @@ def test_negative_non_readonly_user_actions(content_view, function_role, module_
     user_cv_permissions_entities = [
         entity for entity in cv_permissions_entities if entity.name in user_cv_permissions
     ]
-    entities.Filter(
+    target_sat.api.Filter(
         organization=[module_org],
         permission=user_cv_permissions_entities,
         role=function_role,
     ).create()
     # create a user and assign the above created role
-    entities.User(
+    target_sat.api.User(
         organization=[module_org],
         role=[function_role],
         login=user_login,
         password=user_password,
     ).create()
-    cfg = get_nailgun_config()
-    cfg.auth = (user_login, user_password)
     # Check that we cannot read our content view with custom user
+    user_cfg = user_nailgun_config(user_login, user_password)
     with pytest.raises(HTTPError):
-        entities.ContentView(cfg, id=content_view.id).read()
+        target_sat.api.ContentView(server_config=user_cfg, id=content_view.id).read()
     # Check that we have permission to remove the entity
-    entities.ContentView(cfg, id=content_view.id).delete()
+    target_sat.api.ContentView(server_config=user_cfg, id=content_view.id).delete()
     with pytest.raises(HTTPError):
-        entities.ContentView(id=content_view.id).read()
+        target_sat.api.ContentView(id=content_view.id).read()
 
 
 @pytest.mark.skip_if_open("BZ:1625783")
 class TestOstreeContentView:
     """Tests for ostree contents in content views."""
 
-    @pytest.mark.skipif(
-        (not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url'
-    )
     @pytest.fixture(scope='class', autouse=True)
-    def initiate_testclass(self, request, module_product):
+    def initiate_testclass(self, request, module_product, class_target_sat):
         """Set up organization, product and repositories for tests."""
-        request.cls.ostree_repo = entities.Repository(
+        request.cls.ostree_repo = class_target_sat.api.Repository(
             product=module_product,
             content_type='ostree',
-            url=FEDORA27_OSTREE_REPO,
+            url=FEDORA_OSTREE_REPO,
             unprotected=False,
         ).create()
         self.ostree_repo.sync()
         # Create new yum repository
-        request.cls.yum_repo = entities.Repository(
+        request.cls.yum_repo = class_target_sat.api.Repository(
             url=settings.repos.yum_1.url,
             product=module_product,
         ).create()
         self.yum_repo.sync()
         # Create new docker repository
-        request.cls.docker_repo = entities.Repository(
+        request.cls.docker_repo = class_target_sat.api.Repository(
             content_type='docker',
             docker_upstream_name='busybox',
             product=module_product,
@@ -1290,8 +1458,6 @@ class TestOstreeContentView:
 
         :expectedresults: Custom ostree content assigned and present in content
             view
-
-        :CaseLevel: Integration
 
         :CaseImportance: High
         """
@@ -1310,8 +1476,6 @@ class TestOstreeContentView:
         :expectedresults: Content-view with Custom ostree published
             successfully
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         content_view.repository = [self.ostree_repo]
@@ -1328,14 +1492,14 @@ class TestOstreeContentView:
         :expectedresults: Content-view with custom ostree contents promoted
             successfully
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         content_view.repository = [self.ostree_repo]
         content_view = content_view.update(['repository'])
         content_view.publish()
-        promote(content_view.read().version[0], module_lce.id)
+        content_view.read().version[0].promote(
+            data={'environment_ids': module_lce.id, 'force': False}
+        )
         assert len(content_view.read().version[0].read().environment) == 2
 
     @pytest.mark.tier2
@@ -1348,8 +1512,6 @@ class TestOstreeContentView:
         :expectedresults: Content-view with custom ostree and other contents
             promoted successfully
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         content_view.repository = [self.ostree_repo, self.yum_repo, self.docker_repo]
@@ -1357,7 +1519,9 @@ class TestOstreeContentView:
         assert len(content_view.repository) == 3
         content_view.publish()
         assert len(content_view.read().version) == 1
-        promote(content_view.read().version[0], module_lce.id)
+        content_view.read().version[0].promote(
+            data={'environment_ids': module_lce.id, 'force': False}
+        )
         assert len(content_view.read().version[0].read().environment) == 2
 
 
@@ -1365,26 +1529,19 @@ class TestOstreeContentView:
 class TestContentViewRedHatOstreeContent:
     """Tests for publishing and promoting cv with RH ostree contents."""
 
-    @pytest.mark.run_in_one_thread
-    @pytest.mark.skip_if_not_set('fake_manifest')
     @pytest.fixture(scope='class', autouse=True)
-    def initiate_testclass(self, request, module_org):
+    def initiate_testclass(self, request, module_entitlement_manifest_org, class_target_sat):
         """Set up organization, product and repositories for tests."""
 
-        with manifests.clone() as manifest:
-            entities.Subscription().upload(
-                data={'organization_id': module_org.id},
-                files={'content': manifest.content},
-            )
-        repo_id = enable_rhrepo_and_fetchid(
+        repo_id = class_target_sat.api_factory.enable_rhrepo_and_fetchid(
             basearch=None,
-            org_id=module_org.id,
+            org_id=module_entitlement_manifest_org.id,
             product=PRDS['rhah'],
             repo=REPOS['rhaht']['name'],
             reposet=REPOSET['rhaht'],
             releasever=None,
         )
-        request.cls.repo = entities.Repository(id=repo_id)
+        request.cls.repo = class_target_sat.api.Repository(id=repo_id)
         self.repo.sync()
 
     @pytest.mark.tier2
@@ -1395,8 +1552,6 @@ class TestContentViewRedHatOstreeContent:
 
         :expectedresults: RH atomic ostree content assigned and present in
             content view
-
-        :CaseLevel: Integration
 
         :CaseImportance: High
         """
@@ -1415,8 +1570,6 @@ class TestContentViewRedHatOstreeContent:
         :expectedresults: Content-view with RH ostree contents published
             successfully
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         content_view.repository = [self.repo]
@@ -1433,20 +1586,20 @@ class TestContentViewRedHatOstreeContent:
         :expectedresults: Content-view with RH ostree contents promoted
             successfully
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
         content_view.repository = [self.repo]
         content_view = content_view.update(['repository'])
         content_view.publish()
-        promote(content_view.read().version[0], module_lce.id)
+        content_view.read().version[0].promote(
+            data={'environment_ids': module_lce.id, 'force': False}
+        )
         assert len(content_view.read().version[0].read().environment) == 2
 
     @pytest.mark.tier2
     @pytest.mark.upgrade
     def test_positive_publish_promote_with_RH_ostree_and_other(
-        self, content_view, module_org, module_lce
+        self, content_view, module_org, module_lce, module_target_sat
     ):
         """Publish & Promote a content view with RH ostree and other contents
 
@@ -1455,11 +1608,9 @@ class TestContentViewRedHatOstreeContent:
         :expectedresults: Content-view with RH ostree and other contents
             promoted successfully
 
-        :CaseLevel: Integration
-
         :CaseImportance: High
         """
-        repo_id = enable_rhrepo_and_fetchid(
+        repo_id = module_target_sat.api_factory.enable_rhrepo_and_fetchid(
             basearch='x86_64',
             org_id=module_org.id,
             product=PRDS['rhel'],
@@ -1468,11 +1619,13 @@ class TestContentViewRedHatOstreeContent:
             releasever=None,
         )
         # Sync repository
-        rpm_repo = entities.Repository(id=repo_id)
+        rpm_repo = module_target_sat.api.Repository(id=repo_id)
         rpm_repo.sync()
         content_view.repository = [self.repo, rpm_repo]
         content_view = content_view.update(['repository'])
         assert len(content_view.repository) == 2
         content_view.publish()
-        promote(content_view.read().version[0], module_lce.id)
+        content_view.read().version[0].promote(
+            data={'environment_ids': module_lce.id, 'force': False}
+        )
         assert len(content_view.read().version[0].read().environment) == 2

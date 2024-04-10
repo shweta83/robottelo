@@ -2,32 +2,28 @@
 
 :Requirement: Content Access
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Hosts-Content
 
 :CaseAutomation: Automated
 
-:Assignee: spusater
+:team: Phoenix-subscriptions
 
-:TestType: Functional
-
-:Upstream: No
 """
 import time
 
-import pytest
 from nailgun import entities
+import pytest
 
-from robottelo import manifests
-from robottelo.api.utils import promote
-from robottelo.cli.host import Host
-from robottelo.cli.package import Package
 from robottelo.config import settings
-from robottelo.constants import REAL_0_ERRATA_ID
-from robottelo.constants import REAL_RHEL7_0_2_PACKAGE_FILENAME
-from robottelo.constants import REAL_RHEL7_0_2_PACKAGE_NAME
-from robottelo.constants import REPOS
+from robottelo.constants import (
+    DEFAULT_ARCHITECTURE,
+    PRDS,
+    REAL_0_ERRATA_ID,
+    REAL_RHEL7_0_2_PACKAGE_FILENAME,
+    REAL_RHEL7_0_2_PACKAGE_NAME,
+    REPOS,
+    REPOSET,
+)
 
 pytestmark = [
     pytest.mark.skipif(
@@ -38,42 +34,48 @@ pytestmark = [
 
 
 @pytest.fixture(scope='module')
-def module_lce(module_gt_manifest_org):
-    return entities.LifecycleEnvironment(organization=module_gt_manifest_org).create()
+def rh_repo_setup_ak(module_sca_manifest_org, module_target_sat):
+    """Use module sca manifest org, creates rhst repo & syncs it,
+    also create CV, LCE & AK and return AK"""
+    rh_repo_id = module_target_sat.api_factory.enable_rhrepo_and_fetchid(
+        basearch=DEFAULT_ARCHITECTURE,
+        org_id=module_sca_manifest_org.id,
+        product=PRDS['rhel'],
+        repo=REPOS['rhst7']['name'],
+        reposet=REPOSET['rhst7'],
+        releasever=None,
+    )
+    # Sync step because repo is not synced by default
+    rh_repo = module_target_sat.api.Repository(id=rh_repo_id).read()
+    rh_repo.sync()
 
-
-@pytest.fixture(scope="module")
-def rh_repo_cv(module_gt_manifest_org, rh_repo_gt_manifest, module_lce):
-    rh_repo_cv = entities.ContentView(organization=module_gt_manifest_org).create()
+    # Create CV, LCE and AK
+    cv = module_target_sat.api.ContentView(organization=module_sca_manifest_org).create()
+    lce = module_target_sat.api.LifecycleEnvironment(organization=module_sca_manifest_org).create()
     # Add CV to AK
-    rh_repo_cv.repository = [rh_repo_gt_manifest]
-    rh_repo_cv.update(['repository'])
-    rh_repo_cv.publish()
-    rh_repo_cv = rh_repo_cv.read()
+    cv.repository = [rh_repo]
+    cv.update(['repository'])
+    cv.publish()
+    cv = cv.read()
     # promote the last version published into the module lce
-    promote(rh_repo_cv.version[-1], environment_id=module_lce.id)
-    return rh_repo_cv
+    cv.version[-1].promote(data={'environment_ids': lce.id, 'force': False})
 
-
-@pytest.fixture(scope="module")
-def module_ak(rh_repo_cv, module_gt_manifest_org, module_lce):
-    module_ak = entities.ActivationKey(
-        content_view=rh_repo_cv,
-        environment=module_lce,
-        organization=module_gt_manifest_org,
+    ak = module_target_sat.api.ActivationKey(
+        content_view=cv,
+        environment=lce,
+        organization=module_sca_manifest_org,
     ).create()
     # Ensure tools repo is enabled in the activation key
-    module_ak.content_override(
+    ak.content_override(
         data={'content_overrides': [{'content_label': REPOS['rhst7']['id'], 'value': '1'}]}
     )
-    return module_ak
+    return ak
 
 
 @pytest.fixture(scope="module")
 def vm(
-    rh_repo_gt_manifest,
-    module_gt_manifest_org,
-    module_ak,
+    rh_repo_setup_ak,
+    module_sca_manifest_org,
     rhel7_contenthost_module,
     module_target_sat,
 ):
@@ -82,8 +84,9 @@ def vm(
         'rpm -Uvh https://download.fedoraproject.org/pub/epel/7/x86_64/Packages/p/'
         'python2-psutil-5.6.7-1.el7.x86_64.rpm'
     )
-    rhel7_contenthost_module.install_katello_ca(module_target_sat)
-    rhel7_contenthost_module.register_contenthost(module_gt_manifest_org.label, module_ak.name)
+    rhel7_contenthost_module.register(
+        module_sca_manifest_org, None, rh_repo_setup_ak.name, module_target_sat
+    )
     host = entities.Host().search(query={'search': f'name={rhel7_contenthost_module.hostname}'})
     host_id = host[0].id
     host_content = entities.Host(id=host_id).read_json()
@@ -95,7 +98,7 @@ def vm(
 @pytest.mark.tier2
 @pytest.mark.pit_client
 @pytest.mark.pit_server
-def test_positive_list_installable_updates(vm):
+def test_positive_list_installable_updates(vm, module_target_sat):
     """Ensure packages applicability is functioning properly.
 
     :id: 4feb692c-165b-4f96-bb97-c8447bd2cf6e
@@ -119,7 +122,7 @@ def test_positive_list_installable_updates(vm):
     :CaseImportance: Critical
     """
     for _ in range(30):
-        applicable_packages = Package.list(
+        applicable_packages = module_target_sat.cli.Package.list(
             {
                 'host': vm.hostname,
                 'packages-restrict-applicable': 'true',
@@ -139,7 +142,7 @@ def test_positive_list_installable_updates(vm):
 @pytest.mark.upgrade
 @pytest.mark.pit_client
 @pytest.mark.pit_server
-def test_positive_erratum_installable(vm):
+def test_positive_erratum_installable(vm, module_target_sat):
     """Ensure erratum applicability is showing properly, without attaching
     any subscription.
 
@@ -161,7 +164,9 @@ def test_positive_erratum_installable(vm):
     """
     # check that package errata is applicable
     for _ in range(30):
-        erratum = Host.errata_list({'host': vm.hostname, 'search': f'id = {REAL_0_ERRATA_ID}'})
+        erratum = module_target_sat.cli.Host.errata_list(
+            {'host': vm.hostname, 'search': f'id = {REAL_0_ERRATA_ID}'}
+        )
         if erratum:
             break
         time.sleep(10)
@@ -170,7 +175,9 @@ def test_positive_erratum_installable(vm):
 
 
 @pytest.mark.tier2
-def test_negative_rct_not_shows_golden_ticket_enabled(target_sat):
+def test_negative_rct_not_shows_golden_ticket_enabled(
+    target_sat, function_org, function_entitlement_manifest
+):
     """Assert restricted manifest has no Golden Ticket enabled .
 
     :id: 754c1be7-468e-4795-bcf9-258a38f3418b
@@ -185,19 +192,18 @@ def test_negative_rct_not_shows_golden_ticket_enabled(target_sat):
 
     :CaseImportance: High
     """
-    # need a clean org for a new manifest
-    org = entities.Organization().create()
     # upload organization manifest with org environment access disabled
-    manifest = manifests.clone()
-    manifests.upload_manifest_locked(org.id, manifest, interface=manifests.INTERFACE_CLI)
-    result = target_sat.execute(f'rct cat-manifest {manifest.filename}')
+    org = function_org
+    manifest = function_entitlement_manifest
+    target_sat.upload_manifest(org.id, manifest, interface='CLI')
+    result = target_sat.execute(f'rct cat-manifest {manifest.name}')
     assert result.status == 0
     assert 'Content Access Mode: Simple Content Access' not in result.stdout
 
 
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_rct_shows_golden_ticket_enabled(module_gt_manifest_org, target_sat):
+def test_positive_rct_shows_golden_ticket_enabled(module_sca_manifest, target_sat):
     """Assert unrestricted manifest has Golden Ticket enabled .
 
     :id: 0c6e2f88-1a86-4417-9248-d7bd20584197
@@ -211,7 +217,9 @@ def test_positive_rct_shows_golden_ticket_enabled(module_gt_manifest_org, target
 
     :CaseImportance: Medium
     """
-    result = target_sat.execute(f'rct cat-manifest {module_gt_manifest_org.manifest_filename}')
+    with module_sca_manifest as manifest:
+        target_sat.put(f'{manifest.path}', f'{manifest.name}')
+    result = target_sat.execute(f'rct cat-manifest {module_sca_manifest.name}')
     assert result.status == 0
     assert 'Content Access Mode: Simple Content Access' in result.stdout
 
@@ -223,8 +231,6 @@ def test_negative_unregister_and_pull_content(vm):
     :id: de0d0d91-b1e1-4f0e-8a41-c27df4d6b6fd
 
     :expectedresults: Host can no longer retrieve content from satellite
-
-    :CaseLevel: System
 
     :parametrized: yes
 

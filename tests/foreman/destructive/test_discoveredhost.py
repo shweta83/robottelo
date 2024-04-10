@@ -4,27 +4,18 @@
 
 :CaseComponent: DiscoveryImage
 
-:Assignee: gsulliva
+:Team: Rocket
 
 :CaseAutomation: Automated
 
-:CaseLevel: System
-
-:TestType: Functional
-
-:Upstream: No
 """
-import re
 from copy import copy
+import re
 
-import pytest
-from fauxfactory import gen_string
 from nailgun import entity_mixins
-from wait_for import TimedOutError
-from wait_for import wait_for
+import pytest
+from wait_for import TimedOutError, wait_for
 
-from robottelo.helpers import get_nailgun_config
-from robottelo.libvirt_discovery import LibvirtGuest
 from robottelo.logging import logger
 
 pytestmark = pytest.mark.destructive
@@ -43,7 +34,7 @@ def _read_log(ch, pattern):
 
 def _wait_for_log(channel, pattern, timeout=5, delay=0.2):
     """_read_log method enclosed in wait_for method"""
-    matching_log = wait_for(
+    return wait_for(
         _read_log,
         func_args=(
             channel,
@@ -54,7 +45,6 @@ def _wait_for_log(channel, pattern, timeout=5, delay=0.2):
         delay=delay,
         logger=logger,
     )
-    return matching_log
 
 
 def _assert_discovered_host(host, channel=None, user_config=None, sat=None):
@@ -74,9 +64,9 @@ def _assert_discovered_host(host, channel=None, user_config=None, sat=None):
     ]:
         try:
             dhcp_pxe = _wait_for_log(channel, pattern[0], timeout=10)
-        except TimedOutError:
+        except TimedOutError as err:
             # raise assertion error
-            raise AssertionError(f'Timed out waiting for {pattern[1]} from VM')
+            raise AssertionError(f'Timed out waiting for {pattern[1]} from VM') from err
 
     groups = re.search('DHCPACK on (\\d.+) to', dhcp_pxe.out)
     assert len(groups.groups()) == 1, 'Unable to parse bootloader ip address'
@@ -91,9 +81,9 @@ def _assert_discovered_host(host, channel=None, user_config=None, sat=None):
     ]:
         try:
             _wait_for_log(channel, pattern[0], timeout=20)
-        except TimedOutError:
+        except TimedOutError as err:
             # raise assertion error
-            raise AssertionError(f'Timed out waiting for VM (tftp) to fetch {pattern[1]}')
+            raise AssertionError(f'Timed out waiting for VM (tftp) to fetch {pattern[1]}') from err
 
     # assert that server receives DHCP discover from FDI
     for pattern in [
@@ -105,9 +95,9 @@ def _assert_discovered_host(host, channel=None, user_config=None, sat=None):
     ]:
         try:
             dhcp_fdi = _wait_for_log(channel, pattern[0], timeout=30)
-        except TimedOutError:
+        except TimedOutError as err:
             # raise assertion error
-            raise AssertionError(f'Timed out waiting for {pattern[1]} from VM')
+            raise AssertionError(f'Timed out waiting for {pattern[1]} from VM') from err
     groups = re.search('DHCPACK on (\\d.+) to', dhcp_fdi.out)
     assert len(groups.groups()) == 1, 'Unable to parse FDI ip address'
     fdi_ip = groups.groups()[0]
@@ -120,18 +110,18 @@ def _assert_discovered_host(host, channel=None, user_config=None, sat=None):
             f'"/api/v2/discovered_hosts/facts" for {fdi_ip}',
             timeout=60,
         )
-    except TimedOutError:
+    except TimedOutError as err:
         # raise assertion error
-        raise AssertionError('Timed out waiting for /facts POST request')
+        raise AssertionError('Timed out waiting for /facts POST request') from err
     groups = re.search('\\[I\\|app\\|([a-z0-9]+)\\]', facts_fdi.out)
     assert len(groups.groups()) == 1, 'Unable to parse POST request UUID'
     req_id = groups.groups()[0]
 
     try:
         _wait_for_log(channel, f'\\[I\\|app\\|{req_id}\\] Completed 201 Created')
-    except TimedOutError:
+    except TimedOutError as err:
         # raise assertion error
-        raise AssertionError('Timed out waiting for "/facts" 201 response')
+        raise AssertionError('Timed out waiting for "/facts" 201 response') from err
 
     default_config = entity_mixins.DEFAULT_SERVER_CONFIG
 
@@ -147,8 +137,10 @@ def _assert_discovered_host(host, channel=None, user_config=None, sat=None):
             delay=2,
             logger=logger,
         )
-    except TimedOutError:
-        raise AssertionError('Timed out waiting for discovered_host to appear on satellite')
+    except TimedOutError as err:
+        raise AssertionError(
+            'Timed out waiting for discovered_host to appear on satellite'
+        ) from err
     discovered_host = sat.api.DiscoveredHost(user_config or default_config).search(
         query={'search': f'name={host.guest_name}'}
     )
@@ -201,17 +193,8 @@ def discovery_settings(module_org, module_location, target_sat):
     default_disco_settings['discovery_auto'].update(['value'])
 
 
-@pytest.fixture(scope='module')
-def provisioning_env(module_org, module_location, module_target_sat):
-    env = module_target_sat.cli_factory.configure_env_for_provision(
-        org={'id': module_org.id, 'name': module_org.name},
-        loc={'id': module_location.id, 'name': module_location.name},
-    )
-    yield env
-
-
-@pytest.mark.skip_if_not_set('vlan_networking')
-def test_positive_provision_pxe_host_dhcp_change(discovery_settings, provisioning_env, target_sat):
+@pytest.mark.stubbed
+def test_positive_provision_pxe_host_dhcp_change():
     """Discovered host is provisioned in dhcp range defined in subnet entity
 
     :id: 7ab654de-16dd-4a8b-946d-f6adde310340
@@ -223,7 +206,7 @@ def test_positive_provision_pxe_host_dhcp_change(discovery_settings, provisionin
     :Setup: Provisioning should be configured and a host should be
         discovered
 
-    :Steps:
+    :steps:
         1. Set some dhcp range in dhcpd.conf in satellite.
         2. Create subnet entity in satellite with a range different from whats defined
             in `dhcpd.conf`.
@@ -238,59 +221,3 @@ def test_positive_provision_pxe_host_dhcp_change(discovery_settings, provisionin
 
     :CaseImportance: Critical
     """
-    subnet = target_sat.api.Subnet(id=provisioning_env['subnet']['id']).read()
-    # Updating satellite subnet component and dhcp conf ranges
-    # Storing now for restoring later
-    old_sub_from = subnet.from_
-    old_sub_to = subnet.to
-    old_sub_to_4o = old_sub_to.split('.')[-1]
-    # Calculating Subnet's new `from` range in Satellite Subnet Component
-    new_subnet_from = subnet.from_[: subnet.from_.rfind('.') + 1] + str(int(old_sub_to_4o) - 9)
-    # Same time, calculating dhcp confs new `to` range
-    new_dhcp_conf_to = subnet.to[: subnet.to.rfind('.') + 1] + str(int(old_sub_to_4o) - 10)
-
-    cfg = get_nailgun_config()
-    with target_sat.session.shell() as shell:
-        shell.send('foreman-tail')
-        try:
-            # updating the ranges in component and in dhcp.conf
-            subnet.from_ = new_subnet_from
-            subnet.update(['from_'])
-            target_sat.execute(
-                f'cp /etc/dhcp/dhcpd.conf /etc/dhcp/dhcpd_backup.conf && '
-                f'sed -ie \'s/{subnet.to}/{new_dhcp_conf_to}/\' /etc/dhcp/dhcpd.conf && '
-                f'systemctl restart dhcpd'
-            )
-            with LibvirtGuest() as pxe_host:
-                discovered_host = _assert_discovered_host(pxe_host, shell, cfg, sat=target_sat)
-                # Assert Discovered host discovered within dhcp.conf range before provisioning
-                assert int(discovered_host.ip.split('.')[-1]) <= int(
-                    new_dhcp_conf_to.split('.')[-1]
-                )
-                # Provision just discovered host
-                discovered_host.hostgroup = target_sat.api.HostGroup(
-                    id=provisioning_env['hostgroup']['id']
-                ).read()
-                discovered_host.root_pass = gen_string('alphanumeric')
-                discovered_host.update(['hostgroup', 'root_pass'])
-                # Assertions
-                provisioned_host = target_sat.api.Host().search(
-                    query={
-                        'search': 'name={}.{}'.format(
-                            discovered_host.name, provisioning_env['domain']['name']
-                        )
-                    }
-                )[0]
-                assert int(provisioned_host.ip.split('.')[-1]) >= int(
-                    new_subnet_from.split('.')[-1]
-                )
-                assert int(provisioned_host.ip.split('.')[-1]) <= int(old_sub_to_4o)
-                assert not target_sat.api.DiscoveredHost().search(
-                    query={'search': f'name={discovered_host.name}'}
-                )
-        finally:
-            subnet.from_ = old_sub_from
-            subnet.update(['from_'])
-            target_sat.execute(
-                'mv /etc/dhcp/dhcpd_backup.conf /etc/dhcp/dhcpd.conf /etc/dhcp/dhcpd.conf'
-            )

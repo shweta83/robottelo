@@ -4,34 +4,30 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: Settings
 
-:Assignee: shwsingh
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import random
 from time import sleep
 
 import pytest
 
-from robottelo.cli.base import CLIReturnCodeError
-from robottelo.cli.settings import Settings
 from robottelo.config import settings
-from robottelo.datafactory import gen_string
-from robottelo.datafactory import generate_strings_list
-from robottelo.datafactory import invalid_boolean_strings
-from robottelo.datafactory import invalid_emails_list
-from robottelo.datafactory import valid_data_list
-from robottelo.datafactory import valid_emails_list
-from robottelo.datafactory import valid_url_list
-from robottelo.datafactory import xdist_adapter
+from robottelo.exceptions import CLIReturnCodeError
+from robottelo.utils.datafactory import (
+    gen_string,
+    generate_strings_list,
+    invalid_boolean_strings,
+    invalid_emails_list,
+    valid_data_list,
+    valid_emails_list,
+    valid_url_list,
+    xdist_adapter,
+)
 
 
 @pytest.mark.stubbed
@@ -49,7 +45,7 @@ def test_negative_update_hostname_with_empty_fact():
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['discovery_prefix'], indirect=True)
-def test_positive_update_hostname_prefix_without_value(setting_update):
+def test_positive_update_hostname_prefix_without_value(setting_update, module_target_sat):
     """Update the Hostname_prefix settings without any string(empty values)
 
     :id: a84c28ea-6821-4c31-b4ab-8662c22c9135
@@ -59,15 +55,14 @@ def test_positive_update_hostname_prefix_without_value(setting_update):
     :BZ: 1470083
 
     :expectedresults: Error should be raised on setting empty value for discovery_prefix setting
-
     """
     with pytest.raises(CLIReturnCodeError):
-        Settings.set({'name': "discovery_prefix", 'value': ""})
+        module_target_sat.cli.Settings.set({'name': "discovery_prefix", 'value': ""})
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['discovery_prefix'], indirect=True)
-def test_positive_update_hostname_default_prefix(setting_update):
+def test_positive_update_hostname_default_prefix(setting_update, module_target_sat):
     """Update the default set prefix of hostname_prefix setting
 
     :id: a6e46e53-6273-406a-8009-f184d9551d66
@@ -75,11 +70,10 @@ def test_positive_update_hostname_default_prefix(setting_update):
     :parametrized: yes
 
     :expectedresults: Default set prefix should be updated with new value
-
     """
     hostname_prefix_value = gen_string('alpha')
-    Settings.set({'name': "discovery_prefix", 'value': hostname_prefix_value})
-    discovery_prefix = Settings.list({'search': 'name=discovery_prefix'})[0]
+    module_target_sat.cli.Settings.set({'name': "discovery_prefix", 'value': hostname_prefix_value})
+    discovery_prefix = module_target_sat.cli.Settings.list({'search': 'name=discovery_prefix'})[0]
     assert hostname_prefix_value == discovery_prefix['value']
 
 
@@ -114,7 +108,7 @@ def test_negative_discover_host_with_invalid_prefix():
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['login_text'], indirect=True)
-def test_positive_update_login_page_footer_text(setting_update):
+def test_positive_update_login_page_footer_text(setting_update, module_target_sat):
     """Updates parameter "login_text" in settings
 
     :id: 4d4e1151-5bd6-4fa2-8dbb-e182b43ad7ec
@@ -127,17 +121,16 @@ def test_positive_update_login_page_footer_text(setting_update):
     :parametrized: yes
 
     :expectedresults: Parameter is updated successfully
-
     """
     login_text_value = random.choice(list(valid_data_list().values()))
-    Settings.set({'name': "login_text", 'value': login_text_value})
-    login_text = Settings.list({'search': 'name=login_text'})[0]
+    module_target_sat.cli.Settings.set({'name': "login_text", 'value': login_text_value})
+    login_text = module_target_sat.cli.Settings.list({'search': 'name=login_text'})[0]
     assert login_text["value"] == login_text_value
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['login_text'], indirect=True)
-def test_positive_update_login_page_footer_text_without_value(setting_update):
+def test_positive_update_login_page_footer_text_without_value(setting_update, module_target_sat):
     """Updates parameter "login_text" without any string (empty value)
 
     :id: 01ce95de-2994-42b6-b9f8-f7882981fb69
@@ -150,16 +143,15 @@ def test_positive_update_login_page_footer_text_without_value(setting_update):
     :parametrized: yes
 
     :expectedresults: Message on login screen should be removed
-
     """
-    Settings.set({'name': "login_text", 'value': ""})
-    login_text = Settings.list({'search': 'name=login_text'})[0]
+    module_target_sat.cli.Settings.set({'name': "login_text", 'value': ""})
+    login_text = module_target_sat.cli.Settings.list({'search': 'name=login_text'})[0]
     assert login_text['value'] == ''
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['login_text'], indirect=True)
-def test_positive_update_login_page_footer_text_with_long_string(setting_update):
+def test_positive_update_login_page_footer_text_with_long_string(setting_update, module_target_sat):
     """Attempt to update parameter "Login_page_footer_text"
         with long length string under General tab
 
@@ -175,9 +167,11 @@ def test_positive_update_login_page_footer_text_with_long_string(setting_update)
 
     :CaseImportance: Low
     """
-    login_text_value = random.choice(list(generate_strings_list(1000)))
-    Settings.set({'name': "login_text", 'value': login_text_value})
-    login_text = Settings.list({'search': 'name=login_text'})[0]
+    login_text_value = random.choice(
+        list(generate_strings_list(length=1000, exclude_types=['latin1', 'utf8', 'cjk', 'html']))
+    )
+    module_target_sat.cli.Settings.set({'name': "login_text", 'value': login_text_value})
+    login_text = module_target_sat.cli.Settings.list({'search': 'name=login_text'})[0]
     assert login_text['value'] == login_text_value
 
 
@@ -210,7 +204,7 @@ def test_positive_update_email_delivery_method_smtp():
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['delivery_method'], indirect=True)
-def test_positive_update_email_delivery_method_sendmail(setting_update):
+def test_positive_update_email_delivery_method_sendmail(setting_update, module_target_sat):
     """Check Updating Sendmail params through settings subcommand
 
     :id: 578de898-fde2-4957-b39a-9dd059f490bf
@@ -234,13 +228,13 @@ def test_positive_update_email_delivery_method_sendmail(setting_update):
         'sendmail_location': '/usr/sbin/sendmail',
     }
     for key, value in sendmail_config_params.items():
-        Settings.set({'name': f'{key}', 'value': f'{value}'})
-        assert Settings.list({'search': f'name={key}'})[0]['value'] == value
+        module_target_sat.cli.Settings.set({'name': f'{key}', 'value': f'{value}'})
+        assert module_target_sat.cli.Settings.list({'search': f'name={key}'})[0]['value'] == value
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['email_reply_address'], indirect=True)
-def test_positive_update_email_reply_address(setting_update):
+def test_positive_update_email_reply_address(setting_update, module_target_sat):
     """Check email reply address is updated
 
     :id: cb0907d1-9cb6-45c4-b2bb-e2790ea55f16
@@ -255,16 +249,19 @@ def test_positive_update_email_reply_address(setting_update):
     """
     email_address = random.choice(list(valid_emails_list()))
     email_address = email_address.replace('"', r'\"').replace('`', r'\`')
-    Settings.set({'name': "email_reply_address", 'value': email_address})
-    email_reply_address = Settings.list(
+    module_target_sat.cli.Settings.set({'name': "email_reply_address", 'value': email_address})
+    email_reply_address = module_target_sat.cli.Settings.list(
         {'search': 'name=email_reply_address'}, output_format='json'
     )[0]
-    assert email_reply_address['value'] == email_address
+    updated_email_address = (
+        str(email_reply_address['value']).replace('"', r'\"').replace('`', r'\`')
+    )
+    assert updated_email_address == email_address
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['email_reply_address'], indirect=True)
-def test_negative_update_email_reply_address(setting_update):
+def test_negative_update_email_reply_address(setting_update, module_target_sat):
     """Check email reply address is not updated
 
     :id: 2a2220c2-badf-47d5-ba3f-e6329930ab39
@@ -281,12 +278,14 @@ def test_negative_update_email_reply_address(setting_update):
     """
     invalid_email_address = random.choice(list(invalid_emails_list()))
     with pytest.raises(CLIReturnCodeError):
-        Settings.set({'name': 'email_reply_address', 'value': invalid_email_address})
+        module_target_sat.cli.Settings.set(
+            {'name': 'email_reply_address', 'value': invalid_email_address}
+        )
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['email_subject_prefix'], indirect=True)
-def test_positive_update_email_subject_prefix(setting_update):
+def test_positive_update_email_subject_prefix(setting_update, module_target_sat):
     """Check email subject prefix is updated
 
     :id: c8e6b323-7b39-43d6-a9f1-5474f920bba2
@@ -300,14 +299,18 @@ def test_positive_update_email_subject_prefix(setting_update):
     :CaseImportance: Low
     """
     email_subject_prefix_value = gen_string('alpha')
-    Settings.set({'name': "email_subject_prefix", 'value': email_subject_prefix_value})
-    email_subject_prefix = Settings.list({'search': 'name=email_subject_prefix'})[0]
+    module_target_sat.cli.Settings.set(
+        {'name': "email_subject_prefix", 'value': email_subject_prefix_value}
+    )
+    email_subject_prefix = module_target_sat.cli.Settings.list(
+        {'search': 'name=email_subject_prefix'}
+    )[0]
     assert email_subject_prefix_value == email_subject_prefix['value']
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['email_subject_prefix'], indirect=True)
-def test_negative_update_email_subject_prefix(setting_update):
+def test_negative_update_email_subject_prefix(setting_update, module_target_sat):
     """Check email subject prefix is not updated
 
     :id: 8a638596-248f-4196-af36-ad2982196382
@@ -322,18 +325,26 @@ def test_negative_update_email_subject_prefix(setting_update):
 
     :CaseImportance: Low
     """
-    email_subject_prefix_original = Settings.list({'search': 'name=email_subject_prefix'})[0]
+    email_subject_prefix_original = module_target_sat.cli.Settings.list(
+        {'search': 'name=email_subject_prefix'}
+    )[0]
     email_subject_prefix_value = gen_string('alpha', 256)
     with pytest.raises(CLIReturnCodeError):
-        Settings.set({'name': 'email_subject_prefix', 'value': email_subject_prefix_value})
-    email_subject_prefix = Settings.list({'search': 'name=email_subject_prefix'})[0]
+        module_target_sat.cli.Settings.set(
+            {'name': 'email_subject_prefix', 'value': email_subject_prefix_value}
+        )
+    email_subject_prefix = module_target_sat.cli.Settings.list(
+        {'search': 'name=email_subject_prefix'}
+    )[0]
     assert email_subject_prefix == email_subject_prefix_original
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('send_welcome_email_value', ["true", "false"])
 @pytest.mark.parametrize('setting_update', ['send_welcome_email'], indirect=True)
-def test_positive_update_send_welcome_email(setting_update, send_welcome_email_value):
+def test_positive_update_send_welcome_email(
+    setting_update, send_welcome_email_value, module_target_sat
+):
     """Check email send welcome email is updated
 
     :id: cdaf6cd0-5eea-4252-87c5-f9ec3ba79ac1
@@ -348,15 +359,19 @@ def test_positive_update_send_welcome_email(setting_update, send_welcome_email_v
 
     :CaseImportance: Low
     """
-    Settings.set({'name': 'send_welcome_email', 'value': send_welcome_email_value})
-    host_value = Settings.list({'search': 'name=send_welcome_email'})[0]['value']
+    module_target_sat.cli.Settings.set(
+        {'name': 'send_welcome_email', 'value': send_welcome_email_value}
+    )
+    host_value = module_target_sat.cli.Settings.list({'search': 'name=send_welcome_email'})[0][
+        'value'
+    ]
     assert send_welcome_email_value == host_value
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('rss_enable_value', ["true", "false"])
 @pytest.mark.parametrize('setting_update', ['rss_enable'], indirect=True)
-def test_positive_enable_disable_rssfeed(setting_update, rss_enable_value):
+def test_positive_enable_disable_rssfeed(setting_update, rss_enable_value, module_target_sat):
     """Check if the RSS feed can be enabled or disabled
 
     :id: 021cefab-2629-44e2-a30d-49c944d0a234
@@ -369,14 +384,14 @@ def test_positive_enable_disable_rssfeed(setting_update, rss_enable_value):
 
     :CaseAutomation: Automated
     """
-    Settings.set({'name': 'rss_enable', 'value': rss_enable_value})
-    rss_setting = Settings.list({'search': 'name=rss_enable'})[0]
+    module_target_sat.cli.Settings.set({'name': 'rss_enable', 'value': rss_enable_value})
+    rss_setting = module_target_sat.cli.Settings.list({'search': 'name=rss_enable'})[0]
     assert rss_setting["value"] == rss_enable_value
 
 
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['rss_url'], indirect=True)
-def test_positive_update_rssfeed_url(setting_update):
+def test_positive_update_rssfeed_url(setting_update, module_target_sat):
     """Check if the RSS feed URL is updated
 
     :id: 166ff6f2-e36e-4934-951f-b947139d0d73
@@ -394,14 +409,14 @@ def test_positive_update_rssfeed_url(setting_update):
     :CaseAutomation: Automated
     """
     test_url = random.choice(list(valid_url_list()))
-    Settings.set({'name': 'rss_url', 'value': test_url})
-    updated_url = Settings.list({'search': 'name=rss_url'})[0]
+    module_target_sat.cli.Settings.set({'name': 'rss_url', 'value': test_url})
+    updated_url = module_target_sat.cli.Settings.list({'search': 'name=rss_url'})[0]
     assert updated_url['value'] == test_url
 
 
 @pytest.mark.parametrize('value', **xdist_adapter(invalid_boolean_strings()))
 @pytest.mark.tier2
-def test_negative_update_send_welcome_email(value):
+def test_negative_update_send_welcome_email(value, module_target_sat):
     """Check email send welcome email is updated
 
     :id: 2f75775d-72a1-4b2f-86c2-98c36e446099
@@ -419,7 +434,7 @@ def test_negative_update_send_welcome_email(value):
     :CaseImportance: Low
     """
     with pytest.raises(CLIReturnCodeError):
-        Settings.set({'name': 'send_welcome_email', 'value': value})
+        module_target_sat.cli.Settings.set({'name': 'send_welcome_email', 'value': value})
 
 
 @pytest.mark.tier3
@@ -441,8 +456,6 @@ def test_positive_failed_login_attempts_limit(setting_update, target_sat):
 
     :CaseImportance: Critical
 
-    :CaseLevel: System
-
     :parametrized: yes
 
     :expectedresults: failed_login_attempts_limit works as expected
@@ -454,11 +467,11 @@ def test_positive_failed_login_attempts_limit(setting_update, target_sat):
     username = settings.server.admin_username
     password = settings.server.admin_password
     assert target_sat.execute(f'hammer -u {username} -p {password} user list').status == 0
-    Settings.set({'name': 'failed_login_attempts_limit', 'value': '5'})
+    target_sat.cli.Settings.set({'name': 'failed_login_attempts_limit', 'value': '5'})
     for _ in range(5):
         assert target_sat.execute(f'hammer -u {username} -p BAD_PASS user list').status == 129
     assert target_sat.execute(f'hammer -u {username} -p {password} user list').status == 129
     sleep(301)
     assert target_sat.execute(f'hammer -u {username} -p {password} user list').status == 0
-    Settings.set({'name': 'failed_login_attempts_limit', 'value': '0'})
-    assert Settings.info({'name': 'failed_login_attempts_limit'})['value'] == '0'
+    target_sat.cli.Settings.set({'name': 'failed_login_attempts_limit', 'value': '0'})
+    assert target_sat.cli.Settings.info({'name': 'failed_login_attempts_limit'})['value'] == '0'

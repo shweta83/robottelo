@@ -6,33 +6,27 @@
 
 :CaseComponent: ComputeResources-VMWare
 
-:Assignee: lhellebr
-
-:CaseLevel: Acceptance
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
-from math import floor
-from math import log10
+from math import floor, log10
 from random import choice
 
 import pytest
-from nailgun import entities
-from wait_for import TimedOutError
-from wait_for import wait_for
-from wrapanapi.systems.virtualcenter import vim
-from wrapanapi.systems.virtualcenter import VMWareSystem
+from wait_for import TimedOutError, wait_for
+from wrapanapi.systems.virtualcenter import VMWareSystem, vim
 
-from robottelo.api.utils import check_create_os_with_title
 from robottelo.config import settings
-from robottelo.constants import COMPUTE_PROFILE_LARGE
-from robottelo.constants import FOREMAN_PROVIDERS
-from robottelo.constants import VMWARE_CONSTANTS
-from robottelo.datafactory import gen_string
+from robottelo.constants import (
+    COMPUTE_PROFILE_LARGE,
+    DEFAULT_LOC,
+    FOREMAN_PROVIDERS,
+    VMWARE_CONSTANTS,
+)
+from robottelo.utils.datafactory import gen_string
+from robottelo.utils.issue_handlers import is_open
 
 pytestmark = [pytest.mark.skip_if_not_set('vmware')]
 
@@ -62,7 +56,7 @@ def _get_normalized_size(size):
     return f'{size} {suffixes[suffix_index]}'
 
 
-def _get_vmware_datastore_summary_string(data_store_name=VMWARE_CONSTANTS['datastore']):
+def _get_vmware_datastore_summary_string(data_store_name=settings.vmware.datastore, vmware=None):
     """Return the datastore string summary for data_store_name
 
     For "Local-Ironforge" datastore the string looks Like:
@@ -70,7 +64,7 @@ def _get_vmware_datastore_summary_string(data_store_name=VMWARE_CONSTANTS['datas
         "Local-Ironforge (free: 1.66 TB, prov: 2.29 TB, total: 2.72 TB)"
     """
     system = VMWareSystem(
-        hostname=settings.vmware.vcenter,
+        hostname=vmware.hostname,
         username=settings.vmware.username,
         password=settings.vmware.password,
     )
@@ -86,39 +80,15 @@ def _get_vmware_datastore_summary_string(data_store_name=VMWARE_CONSTANTS['datas
     return f'{data_store_name} (free: {free_space}, prov: {prov}, total: {capacity})'
 
 
-@pytest.fixture(scope='module')
-def module_org():
-    return entities.Organization().create()
-
-
-@pytest.fixture(scope='module')
-def module_vmware_settings():
-    ret = dict(
-        vcenter=settings.vmware.vcenter,
-        user=settings.vmware.username,
-        password=settings.vmware.password,
-        datacenter=settings.vmware.datacenter,
-        image_name=settings.vmware.image_name,
-        image_arch=settings.vmware.image_arch,
-        image_os=settings.vmware.image_os,
-        image_username=settings.vmware.image_username,
-        image_password=settings.vmware.image_password,
-        vm_name=settings.vmware.vm_name,
-    )
-    if 'INTERFACE' in settings.vmware:
-        ret['interface'] = VMWARE_CONSTANTS['network_interfaces'] % settings.vmware.interface
-    return ret
-
-
+@pytest.mark.e2e
 @pytest.mark.tier1
-def test_positive_end_to_end(session, module_org, module_location, module_vmware_settings):
-    """Perform end to end testing for compute resource VMware component.
+@pytest.mark.parametrize('vmware', ['vmware7', 'vmware8'], indirect=True)
+def test_positive_cr_end_to_end(session, module_org, module_location, vmware, module_target_sat):
+    """Perform end-to-end testing for compute resource VMware component.
 
     :id: 47fc9e77-5b22-46b4-a76c-3217434fde2f
 
     :expectedresults: All expected CRUD actions finished successfully.
-
-    :CaseLevel: Integration
     """
     cr_name = gen_string('alpha')
     new_cr_name = gen_string('alpha')
@@ -126,18 +96,18 @@ def test_positive_end_to_end(session, module_org, module_location, module_vmware
     display_type = choice(('VNC', 'VMRC'))
     vnc_console_passwords = choice((False, True))
     enable_caching = choice((False, True))
-    new_org = entities.Organization().create()
-    new_loc = entities.Location().create()
+    new_org = module_target_sat.api.Organization().create()
+    new_loc = module_target_sat.api.Location().create()
     with session:
         session.computeresource.create(
             {
                 'name': cr_name,
                 'description': description,
                 'provider': FOREMAN_PROVIDERS['vmware'],
-                'provider_content.vcenter': module_vmware_settings['vcenter'],
-                'provider_content.user': module_vmware_settings['user'],
-                'provider_content.password': module_vmware_settings['password'],
-                'provider_content.datacenter.value': module_vmware_settings['datacenter'],
+                'provider_content.vcenter': vmware.hostname,
+                'provider_content.user': settings.vmware.username,
+                'provider_content.password': settings.vmware.password,
+                'provider_content.datacenter.value': settings.vmware.datacenter,
                 'provider_content.display_type': display_type,
                 'provider_content.vnc_console_passwords': vnc_console_passwords,
                 'provider_content.enable_caching': enable_caching,
@@ -149,11 +119,8 @@ def test_positive_end_to_end(session, module_org, module_location, module_vmware
         assert cr_values['name'] == cr_name
         assert cr_values['description'] == description
         assert cr_values['provider'] == FOREMAN_PROVIDERS['vmware']
-        assert cr_values['provider_content']['user'] == module_vmware_settings['user']
-        assert (
-            cr_values['provider_content']['datacenter']['value']
-            == module_vmware_settings['datacenter']
-        )
+        assert cr_values['provider_content']['user'] == settings.vmware.username
+        assert cr_values['provider_content']['datacenter']['value'] == settings.vmware.datacenter
         assert cr_values['provider_content']['display_type'] == display_type
         assert cr_values['provider_content']['vnc_console_passwords'] == vnc_console_passwords
         assert cr_values['provider_content']['enable_caching'] == enable_caching
@@ -187,7 +154,8 @@ def test_positive_end_to_end(session, module_org, module_location, module_vmware
 
 
 @pytest.mark.tier2
-def test_positive_retrieve_virtual_machine_list(session, module_vmware_settings):
+@pytest.mark.parametrize('vmware', ['vmware7', 'vmware8'], indirect=True)
+def test_positive_retrieve_virtual_machine_list(session, vmware):
     """List the virtual machine list from vmware compute resource
 
     :id: 21ade57a-0caa-4144-9c46-c8e22f33414e
@@ -200,20 +168,18 @@ def test_positive_retrieve_virtual_machine_list(session, module_vmware_settings)
         2. Go to "Virtual Machines" tab.
 
     :expectedresults: The Virtual machines should be displayed
-
-    :CaseLevel: Integration
     """
     cr_name = gen_string('alpha')
-    vm_name = module_vmware_settings['vm_name']
+    vm_name = settings.vmware.vm_name
     with session:
         session.computeresource.create(
             {
                 'name': cr_name,
                 'provider': FOREMAN_PROVIDERS['vmware'],
-                'provider_content.vcenter': module_vmware_settings['vcenter'],
-                'provider_content.user': module_vmware_settings['user'],
-                'provider_content.password': module_vmware_settings['password'],
-                'provider_content.datacenter.value': module_vmware_settings['datacenter'],
+                'provider_content.vcenter': vmware.hostname,
+                'provider_content.user': settings.vmware.username,
+                'provider_content.password': settings.vmware.password,
+                'provider_content.datacenter.value': settings.vmware.datacenter,
             }
         )
         assert session.computeresource.search(cr_name)[0]['Name'] == cr_name
@@ -222,30 +188,30 @@ def test_positive_retrieve_virtual_machine_list(session, module_vmware_settings)
         )
 
 
+@pytest.mark.e2e
 @pytest.mark.tier2
-def test_positive_image_end_to_end(session, module_vmware_settings):
+@pytest.mark.parametrize('vmware', ['vmware7', 'vmware8'], indirect=True)
+def test_positive_image_end_to_end(session, target_sat, vmware):
     """Perform end to end testing for compute resource VMware component image.
 
     :id: 6b7949ef-c684-40aa-b181-11f8d4cd39c6
 
     :expectedresults: All expected CRUD actions finished successfully.
-
-    :CaseLevel: Integration
     """
     cr_name = gen_string('alpha')
     image_name = gen_string('alpha')
     new_image_name = gen_string('alpha')
-    check_create_os_with_title(module_vmware_settings['image_os'])
+    os = target_sat.api_factory.check_create_os_with_title(settings.vmware.image_os)
     image_user_data = choice((False, True))
     with session:
         session.computeresource.create(
             {
                 'name': cr_name,
                 'provider': FOREMAN_PROVIDERS['vmware'],
-                'provider_content.vcenter': module_vmware_settings['vcenter'],
-                'provider_content.user': module_vmware_settings['user'],
-                'provider_content.password': module_vmware_settings['password'],
-                'provider_content.datacenter.value': module_vmware_settings['datacenter'],
+                'provider_content.vcenter': vmware.hostname,
+                'provider_content.user': settings.vmware.username,
+                'provider_content.password': settings.vmware.password,
+                'provider_content.datacenter.value': settings.vmware.datacenter,
             }
         )
         assert session.computeresource.search(cr_name)[0]['Name'] == cr_name
@@ -253,21 +219,21 @@ def test_positive_image_end_to_end(session, module_vmware_settings):
             cr_name,
             dict(
                 name=image_name,
-                operating_system=module_vmware_settings['image_os'],
-                architecture=module_vmware_settings['image_arch'],
-                username=module_vmware_settings['image_username'],
+                operating_system=os.title,
+                architecture=settings.vmware.image_arch,
+                username=settings.vmware.image_username,
                 user_data=image_user_data,
-                password=module_vmware_settings['image_password'],
-                image=module_vmware_settings['image_name'],
+                password=settings.vmware.image_password,
+                image=settings.vmware.image_name,
             ),
         )
         values = session.computeresource.read_image(cr_name, image_name)
         assert values['name'] == image_name
-        assert values['operating_system'] == module_vmware_settings['image_os']
-        assert values['architecture'] == module_vmware_settings['image_arch']
-        assert values['username'] == module_vmware_settings['image_username']
+        assert values['operating_system'] == os.title
+        assert values['architecture'] == settings.vmware.image_arch
+        assert values['username'] == settings.vmware.image_username
         assert values['user_data'] == image_user_data
-        assert values['image'] == module_vmware_settings['image_name']
+        assert values['image'] == settings.vmware.image_name
         session.computeresource.update_image(cr_name, image_name, dict(name=new_image_name))
         assert session.computeresource.search_images(cr_name, image_name)[0]['Name'] != image_name
         assert (
@@ -283,27 +249,26 @@ def test_positive_image_end_to_end(session, module_vmware_settings):
 
 @pytest.mark.tier2
 @pytest.mark.run_in_one_thread
-def test_positive_resource_vm_power_management(session, module_vmware_settings):
+@pytest.mark.parametrize('vmware', ['vmware7', 'vmware8'], indirect=True)
+def test_positive_resource_vm_power_management(session, vmware):
     """Read current VMware Compute Resource virtual machine power status and
     change it to opposite one
 
     :id: faeabe45-5112-43a6-bde9-f869dfb26cf5
 
     :expectedresults: virtual machine is powered on or powered off depending on its initial state
-
-    :CaseLevel: Integration
     """
     cr_name = gen_string('alpha')
-    vm_name = module_vmware_settings['vm_name']
+    vm_name = settings.vmware.vm_name
     with session:
         session.computeresource.create(
             {
                 'name': cr_name,
                 'provider': FOREMAN_PROVIDERS['vmware'],
-                'provider_content.vcenter': module_vmware_settings['vcenter'],
-                'provider_content.user': module_vmware_settings['user'],
-                'provider_content.password': module_vmware_settings['password'],
-                'provider_content.datacenter.value': module_vmware_settings['datacenter'],
+                'provider_content.vcenter': vmware.hostname,
+                'provider_content.user': settings.vmware.username,
+                'provider_content.password': settings.vmware.password,
+                'provider_content.datacenter.value': settings.vmware.datacenter,
             }
         )
         assert session.computeresource.search(cr_name)[0]['Name'] == cr_name
@@ -322,183 +287,262 @@ def test_positive_resource_vm_power_management(session, module_vmware_settings):
                 timeout=30,
                 delay=2,
             )
-        except TimedOutError:
-            raise AssertionError('Timed out waiting for VM to toggle power state')
+        except TimedOutError as err:
+            raise AssertionError('Timed out waiting for VM to toggle power state') from err
 
 
+@pytest.mark.e2e
+@pytest.mark.upgrade
 @pytest.mark.tier2
-def test_positive_select_vmware_custom_profile_guest_os_rhel7(session, module_vmware_settings):
-    """Select custom default (3-Large) compute profile guest OS RHEL7.
+@pytest.mark.parametrize('vmware', ['vmware7', 'vmware8'], indirect=True)
+def test_positive_vmware_custom_profile_end_to_end(session, vmware, request, target_sat):
+    """Perform end to end testing for VMware compute profile.
 
     :id: 24f7bb5f-2aaf-48cb-9a56-d2d0713dfe3d
 
     :customerscenario: true
 
-    :setup: vmware hostname and credentials.
-
     :steps:
 
         1. Create a compute resource of type vmware.
-        2. Provide valid hostname, username and password.
-        3. Select the created vmware CR.
-        4. Click Compute Profile tab.
-        5. Select 3-Large profile
-        6. Set Guest OS field to RHEL7 OS.
+        2. Update a compute profile with all values
 
-    :expectedresults: Guest OS RHEL7 is selected successfully.
+    :expectedresults: Compute profiles are updated successfully with all the values.
 
-    :BZ: 1315277
-
-    :CaseLevel: Integration
+    :BZ: 1315277, 2266672
     """
     cr_name = gen_string('alpha')
-    guest_os_name = 'Red Hat Enterprise Linux 7 (64-bit)'
+    guest_os_names = [
+        'Red Hat Enterprise Linux 7 (64-bit)',
+        'Red Hat Enterprise Linux 8 (64 bit)',
+        'Red Hat Enterprise Linux 9 (64 bit)',
+    ]
+    compute_profile = ['1-Small', '2-Medium', '3-Large']
+    cpus = ['2', '4', '6']
+    vm_memory = ['4000', '6000', '8000']
+    annotation_notes = gen_string('alpha')
+    firmware_type = ['Automatic', 'BIOS', 'EFI']
+    resource_pool = VMWARE_CONSTANTS['pool']
+    folder = VMWARE_CONSTANTS['folder']
+    virtual_hw_version = VMWARE_CONSTANTS['virtualhw_version']
+    memory_hot_add = True
+    cpu_hot_add = True
+    cdrom_drive = True
+    disk_size = '10 GB'
+    network = 'VLAN 1001'  # hardcoding network here as this test won't be doing actual provisioning
+    data_store_summary_string = _get_vmware_datastore_summary_string(vmware=vmware)
+    storage_data = {
+        'storage': {
+            'controller': VMWARE_CONSTANTS['scsicontroller'],
+            'disks': [
+                {
+                    'data_store': data_store_summary_string,
+                    'size': disk_size,
+                    'thin_provision': True,
+                }
+            ],
+        }
+    }
+    network_data = {
+        'network_interfaces': {
+            'nic_type': VMWARE_CONSTANTS['network_interface_name'],
+            'network': network,
+        }
+    }
     with session:
         session.computeresource.create(
             {
                 'name': cr_name,
                 'provider': FOREMAN_PROVIDERS['vmware'],
-                'provider_content.vcenter': module_vmware_settings['vcenter'],
-                'provider_content.user': module_vmware_settings['user'],
-                'provider_content.password': module_vmware_settings['password'],
-                'provider_content.datacenter.value': module_vmware_settings['datacenter'],
+                'provider_content.vcenter': vmware.hostname,
+                'provider_content.user': settings.vmware.username,
+                'provider_content.password': settings.vmware.password,
+                'provider_content.datacenter.value': settings.vmware.datacenter,
             }
         )
+
+        @request.addfinalizer
+        def _finalize():
+            cr = target_sat.api.VMWareComputeResource().search(query={'search': f'name={cr_name}'})
+            if cr:
+                target_sat.api.VMWareComputeResource(id=cr[0].id).delete()
+
         assert session.computeresource.search(cr_name)[0]['Name'] == cr_name
-        session.computeresource.update_computeprofile(
-            cr_name, COMPUTE_PROFILE_LARGE, {'provider_content.guest_os': guest_os_name}
-        )
-        values = session.computeresource.read_computeprofile(cr_name, COMPUTE_PROFILE_LARGE)
-        assert values['provider_content']['guest_os'] == guest_os_name
+        for guest_os_name, cprofile, cpu, memory, firmware in zip(
+            guest_os_names, compute_profile, cpus, vm_memory, firmware_type, strict=True
+        ):
+            session.computeresource.update_computeprofile(
+                cr_name,
+                cprofile,
+                {
+                    'provider_content.guest_os': guest_os_name,
+                    'provider_content.cpus': cpu,
+                    'provider_content.memory': memory,
+                    'provider_content.cluster': settings.vmware.cluster,
+                    'provider_content.annotation_notes': annotation_notes,
+                    'provider_content.virtual_hw_version': virtual_hw_version,
+                    'provider_content.firmware': firmware,
+                    'provider_content.resource_pool': resource_pool,
+                    'provider_content.folder': folder,
+                    'provider_content.memory_hot_add': memory_hot_add,
+                    'provider_content.cpu_hot_add': cpu_hot_add,
+                    'provider_content.cdrom_drive': cdrom_drive,
+                    'provider_content.storage': [value for value in storage_data.values()],
+                    'provider_content.network_interfaces': [
+                        value for value in network_data.values()
+                    ],
+                },
+            )
+            values = session.computeresource.read_computeprofile(cr_name, cprofile)
+            provider_content = values['provider_content']
+            assert provider_content['guest_os'] == guest_os_name
+            assert provider_content['cpus'] == cpu
+            assert provider_content['memory'] == memory
+            assert provider_content['cluster'] == settings.vmware.cluster
+            assert provider_content['annotation_notes'] == annotation_notes
+            assert provider_content['virtual_hw_version'] == virtual_hw_version
+            if not is_open('BZ:2266672'):
+                assert values['provider_content']['firmware'] == firmware
+            assert provider_content['resource_pool'] == resource_pool
+            assert provider_content['folder'] == folder
+            assert provider_content['memory_hot_add'] == memory_hot_add
+            assert provider_content['cpu_hot_add'] == cpu_hot_add
+            assert provider_content['cdrom_drive'] == cdrom_drive
+            assert (
+                provider_content['storage'][0]['controller'] == VMWARE_CONSTANTS['scsicontroller']
+            )
+            assert provider_content['storage'][0]['disks'][0]['size'] == disk_size
+            assert (
+                provider_content['network_interfaces'][0]['nic_type']
+                == VMWARE_CONSTANTS['network_interface_name']
+            )
+            assert provider_content['network_interfaces'][0]['network'] == network
+        session.computeresource.delete(cr_name)
+        assert not session.computeresource.search(cr_name)
 
 
 @pytest.mark.tier2
-def test_positive_access_vmware_with_custom_profile(session, module_vmware_settings):
-    """Associate custom default (3-Large) compute profile
+@pytest.mark.parametrize('vmware', ['vmware7', 'vmware8'], indirect=True)
+def test_positive_virt_card(session, target_sat, module_location, module_org, vmware):
+    """Check to see that the Virtualization card appears for an imported VM
 
-    :id: 751ef765-5091-4322-a0d9-0c9c73009cc4
+    :id: 0502d5a6-64c1-422f-a9ba-ac7c2ee7bad2
 
-    :setup: vmware hostname and credentials.
+    :parametrized: no
 
-    :steps:
+    :expectedresults: Virtualization card appears in the new Host UI for the VM
 
-        1. Create a compute resource of type vmware.
-        2. Provide valid hostname, username and password.
-        3. Select the created vmware CR.
-        4. Click Compute Profile tab.
-        5. Edit (3-Large) with valid configurations and submit.
-
-    :expectedresults: The Compute Resource created and associated to compute profile (3-Large)
-        with provided values.
-
-    :CaseLevel: Integration
+    :CaseImportance: Medium
     """
-    cr_name = gen_string('alpha')
-    data_store_summary_string = _get_vmware_datastore_summary_string()
-    cr_profile_data = dict(
-        cpus='2',
-        cores_per_socket='2',
-        memory='1024',
-        firmware='EFI',
-        cluster=VMWARE_CONSTANTS.get('cluster'),
-        resource_pool=VMWARE_CONSTANTS.get('pool'),
-        folder=VMWARE_CONSTANTS.get('folder'),
-        guest_os=VMWARE_CONSTANTS.get('guest_os'),
-        virtual_hw_version=VMWARE_CONSTANTS.get('virtualhw_version'),
-        memory_hot_add=True,
-        cpu_hot_add=True,
-        cdrom_drive=True,
-        annotation_notes=gen_string('alpha'),
-        network_interfaces=[]
-        if 'interface' not in module_vmware_settings
-        else [
-            dict(
-                nic_type=VMWARE_CONSTANTS.get('network_interface_name'),
-                network=module_vmware_settings['interface'],
-            ),
-            dict(
-                nic_type=VMWARE_CONSTANTS.get('network_interface_name'),
-                network=module_vmware_settings['interface'],
-            ),
-        ],
-        storage=[
-            dict(
-                controller=VMWARE_CONSTANTS.get('scsicontroller'),
-                disks=[
-                    dict(
-                        data_store=data_store_summary_string,
-                        size='10 GB',
-                        thin_provision=True,
-                    ),
-                    dict(
-                        data_store=data_store_summary_string,
-                        size='20 GB',
-                        thin_provision=False,
-                        eager_zero=False,
-                    ),
-                ],
-            ),
-            dict(
-                controller=VMWARE_CONSTANTS.get('scsicontroller'),
-                disks=[
-                    dict(
-                        data_store=data_store_summary_string,
-                        size='30 GB',
-                        thin_provision=False,
-                        eager_zero=True,
-                    )
-                ],
-            ),
-        ],
+    # create entities for hostgroup
+    default_loc_id = (
+        target_sat.api.Location().search(query={'search': f'name="{DEFAULT_LOC}"'})[0].id
     )
+    target_sat.api.SmartProxy(id=1, location=[default_loc_id, module_location.id]).update()
+    domain = target_sat.api.Domain(
+        organization=[module_org.id], location=[module_location]
+    ).create()
+    subnet = target_sat.api.Subnet(
+        organization=[module_org.id], location=[module_location], domain=[domain]
+    ).create()
+    architecture = target_sat.api.Architecture().create()
+    ptable = target_sat.api.PartitionTable(
+        organization=[module_org.id], location=[module_location]
+    ).create()
+    operatingsystem = target_sat.api.OperatingSystem(
+        architecture=[architecture], ptable=[ptable]
+    ).create()
+    medium = target_sat.api.Media(
+        organization=[module_org.id], location=[module_location], operatingsystem=[operatingsystem]
+    ).create()
+    lce = (
+        target_sat.api.LifecycleEnvironment(name="Library", organization=module_org.id)
+        .search()[0]
+        .read()
+        .id
+    )
+    cv = target_sat.api.ContentView(organization=module_org).create()
+    cv.publish()
+
+    # create hostgroup
+    hostgroup_name = gen_string('alpha')
+    target_sat.api.HostGroup(
+        name=hostgroup_name,
+        architecture=architecture,
+        domain=domain,
+        subnet=subnet,
+        location=[module_location.id],
+        medium=medium,
+        operatingsystem=operatingsystem,
+        organization=[module_org],
+        ptable=ptable,
+        lifecycle_environment=lce,
+        content_view=cv,
+        content_source=1,
+    ).create()
+    cr_name = gen_string('alpha')
     with session:
         session.computeresource.create(
             {
                 'name': cr_name,
                 'provider': FOREMAN_PROVIDERS['vmware'],
-                'provider_content.vcenter': module_vmware_settings['vcenter'],
-                'provider_content.user': module_vmware_settings['user'],
-                'provider_content.password': module_vmware_settings['password'],
-                'provider_content.datacenter.value': module_vmware_settings['datacenter'],
+                'provider_content.vcenter': vmware.hostname,
+                'provider_content.user': settings.vmware.username,
+                'provider_content.password': settings.vmware.password,
+                'provider_content.datacenter.value': settings.vmware.datacenter,
+                'locations.resources.assigned': [module_location.name],
+                'organizations.resources.assigned': [module_org.name],
             }
         )
-        assert session.computeresource.search(cr_name)[0]['Name'] == cr_name
-        session.computeresource.update_computeprofile(
+        session.hostgroup.update(hostgroup_name, {'host_group.deploy': cr_name + " (VMware)"})
+        session.computeresource.vm_import(
             cr_name,
-            COMPUTE_PROFILE_LARGE,
-            {f'provider_content.{key}': value for key, value in cr_profile_data.items()},
+            settings.vmware.vm_name,
+            hostgroup_name,
+            module_location.name,
+            name=settings.vmware.vm_name,
         )
-        values = session.computeresource.read_computeprofile(cr_name, COMPUTE_PROFILE_LARGE)
-        provider_content = values['provider_content']
-        # assert main compute resource profile data updated successfully.
-        excluded_keys = ['network_interfaces', 'storage']
-        expected_value = {
-            key: value for key, value in cr_profile_data.items() if key not in excluded_keys
-        }
-        provided_value = {
-            key: value for key, value in provider_content.items() if key in expected_value
-        }
-        assert provided_value == expected_value
-        # assert compute resource profile network data updated successfully.
-        for network_index, expected_network_value in enumerate(
-            cr_profile_data['network_interfaces']
-        ):
-            provided_network_value = {
-                key: value
-                for key, value in provider_content['network_interfaces'][network_index].items()
-                if key in expected_network_value
-            }
-            assert provided_network_value == expected_network_value
-        # assert compute resource profile storage data updated successfully.
-        for controller_index, expected_controller_value in enumerate(cr_profile_data['storage']):
-            provided_controller_value = provider_content['storage'][controller_index]
-            assert (
-                provided_controller_value['controller'] == expected_controller_value['controller']
-            )
-            for disk_index, expected_disk_value in enumerate(expected_controller_value['disks']):
-                provided_disk_value = {
-                    key: value
-                    for key, value in provided_controller_value['disks'][disk_index].items()
-                    if key in expected_disk_value
-                }
-                assert provided_disk_value == expected_disk_value
+        host_name = '.'.join([settings.vmware.vm_name, domain.name])
+        power_status = session.computeresource.vm_status(cr_name, settings.vmware.vm_name)
+        if power_status is False:
+            session.computeresource.vm_poweron(cr_name, settings.vmware.vm_name)
+            try:
+                wait_for(
+                    lambda: (
+                        session.browser.refresh(),
+                        session.computeresource.vm_status(cr_name, settings.vmware.vm_name),
+                    )[1]
+                    is not power_status,
+                    timeout=30,
+                    delay=2,
+                )
+            except TimedOutError as err:
+                raise AssertionError('Timed out waiting for VM to toggle power state') from err
+
+        virt_card = session.host_new.get_virtualization(host_name)['details']
+        assert virt_card['datacenter'] == settings.vmware.datacenter
+        assert virt_card['cluster'] == settings.vmware.cluster
+        assert virt_card['memory'] == '5 GB'
+        assert 'public_ip_address' in virt_card
+        assert virt_card['mac_address'] == vmware.mac_address
+        assert virt_card['cpus'] == '1'
+        if 'disk_label' in virt_card:
+            assert virt_card['disk_label'] == 'Hard disk 1'
+        if 'disk_capacity' in virt_card:
+            assert virt_card['disk_capacity'] != ''
+        if 'partition_capacity' in virt_card:
+            assert virt_card['partition_capacity'] != ''
+        if 'partition_path' in virt_card:
+            assert virt_card['partition_path'] == '/boot'
+        if 'partition_allocation' in virt_card:
+            assert virt_card['partition_allocation'] != ''
+        assert virt_card['cores_per_socket'] == '1'
+        assert virt_card['firmware'] == 'bios'
+        assert virt_card['hypervisor'] != ''
+        assert virt_card['connection_state'] == 'connected'
+        assert virt_card['overall_status'] == 'green'
+        assert virt_card['annotation_notes'] == ''
+        assert virt_card['running_on'] == cr_name
+        target_sat.api.Host(
+            id=target_sat.api.Host().search(query={'search': f'name={host_name}'})[0].id
+        ).delete()

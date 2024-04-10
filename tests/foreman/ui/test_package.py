@@ -1,45 +1,36 @@
 """Test class for Packages UI
 
-:Requirement: Packages
+:Requirement: Repositories
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
+:CaseComponent: Repositories
 
-:CaseComponent: ContentManagement
-
-:Assignee: ltran
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
-from nailgun import entities
+import pytest
 
-from robottelo import manifests
-from robottelo.api.utils import enable_rhrepo_and_fetchid
 from robottelo.config import settings
-from robottelo.constants import RPM_TO_UPLOAD
-from robottelo.helpers import get_data_file
+from robottelo.constants import RPM_TO_UPLOAD, DataFile
 
 
 @pytest.fixture(scope='module')
-def module_org():
-    return entities.Organization().create()
+def module_org(module_target_sat):
+    return module_target_sat.api.Organization().create()
 
 
 @pytest.fixture(scope='module')
-def module_product(module_org):
-    return entities.Product(organization=module_org).create()
+def module_product(module_org, module_target_sat):
+    return module_target_sat.api.Product(organization=module_org).create()
 
 
 @pytest.fixture(scope='module')
-def module_yum_repo(module_product):
-    yum_repo = entities.Repository(
+def module_yum_repo(module_product, module_target_sat):
+    yum_repo = module_target_sat.api.Repository(
         name=gen_string('alpha'),
         product=module_product,
         content_type='yum',
@@ -50,8 +41,8 @@ def module_yum_repo(module_product):
 
 
 @pytest.fixture(scope='module')
-def module_yum_repo2(module_product):
-    yum_repo = entities.Repository(
+def module_yum_repo2(module_product, module_target_sat):
+    yum_repo = module_target_sat.api.Repository(
         name=gen_string('alpha'),
         product=module_product,
         content_type='yum',
@@ -62,19 +53,18 @@ def module_yum_repo2(module_product):
 
 
 @pytest.fixture(scope='module')
-def module_rh_repo(module_org, module_target_sat):
-    manifests.upload_manifest_locked(module_org.id, manifests.clone())
+def module_rh_repo(module_entitlement_manifest_org, module_target_sat):
     rhst = module_target_sat.cli_factory.SatelliteToolsRepository(cdn=True)
-    repo_id = enable_rhrepo_and_fetchid(
+    repo_id = module_target_sat.api_factory.enable_rhrepo_and_fetchid(
         basearch=rhst.data['arch'],
-        org_id=module_org.id,
+        org_id=module_entitlement_manifest_org.id,
         product=rhst.data['product'],
         repo=rhst.data['repository'],
         reposet=rhst.data['repository-set'],
         releasever=rhst.data['releasever'],
     )
-    entities.Repository(id=repo_id).sync()
-    return entities.Repository(id=repo_id).read()
+    module_target_sat.api.Repository(id=repo_id).sync()
+    return module_target_sat.api.Repository(id=repo_id).read()
 
 
 @pytest.mark.tier2
@@ -86,8 +76,6 @@ def test_positive_search_in_repo(session, module_org, module_yum_repo):
 
     :expectedresults: Content search functionality works as intended and
         expected packages are present inside of repository
-
-    :CaseLevel: Integration
     """
     with session:
         session.organization.select(org_name=module_org.name)
@@ -112,8 +100,6 @@ def test_positive_search_in_multiple_repos(session, module_org, module_yum_repo,
         expected packages are present inside of repositories
 
     :BZ: 1514457
-
-    :CaseLevel: Integration
     """
     with session:
         session.organization.select(org_name=module_org.name)
@@ -142,8 +128,6 @@ def test_positive_check_package_details(session, module_org, module_yum_repo):
 
     :expectedresults: Package is present inside of repository and has all
         expected values in details section
-
-    :CaseLevel: Integration
 
     :customerscenario: true
     """
@@ -185,14 +169,11 @@ def test_positive_check_custom_package_details(session, module_org, module_yum_r
     :expectedresults: Package is present inside of repository and it
         possible to view its details
 
-    :CaseLevel: Integration
-
     :customerscenario: true
 
     :BZ: 1387766, 1394390
     """
-    with open(get_data_file(RPM_TO_UPLOAD), 'rb') as handle:
-        module_yum_repo.upload_content(files={'content': handle})
+    module_yum_repo.upload_content(files={'content': DataFile.RPM_TO_UPLOAD.read_bytes()})
     with session:
         session.organization.select(org_name=module_org.name)
         assert session.package.search(
@@ -215,8 +196,6 @@ def test_positive_rh_repo_search_and_check_file_list(session, module_org, module
 
     :expectedresults: Content search functionality works as intended and
         package contains expected list of files
-
-    :CaseLevel: System
     """
     with session:
         session.organization.select(org_name=module_org.name)

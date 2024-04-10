@@ -1,102 +1,41 @@
-import contextlib
-import random
+from datetime import datetime, timedelta
 import time
 
-from robottelo.cli.proxy import CapsuleTunnelError
+from dateutil.parser import parse
+
+from robottelo.constants import PUPPET_CAPSULE_INSTALLER, PUPPET_COMMON_INSTALLER_OPTS
 from robottelo.logging import logger
+from robottelo.utils.installer import InstallerCommand
+
+
+class EnablePluginsCapsule:
+    """Miscellaneous settings helper methods"""
+
+    def enable_puppet_capsule(self, satellite=None):
+        # Set Satellite URL for puppet-server-foreman-url
+        if satellite is not None:
+            satellite_url = f'https://{satellite.hostname}'
+            PUPPET_COMMON_INSTALLER_OPTS['puppet-server-foreman-url'] = satellite_url
+        enable_capsule_cmd = InstallerCommand(
+            installer_args=PUPPET_CAPSULE_INSTALLER, installer_opts=PUPPET_COMMON_INSTALLER_OPTS
+        )
+        result = self.execute(enable_capsule_cmd.get_command(), timeout='20m')
+        assert result.status == 0
+        assert 'Success!' in result.stdout
+        return self
 
 
 class CapsuleInfo:
     """Miscellaneous Capsule helper methods"""
 
-    def get_available_capsule_port(self, port_pool=None):
-        """returns a list of unused ports dedicated for fake capsules
-        This calls an ss command on the server prompting for a port range. ss
-        returns a list of ports which have a PID assigned (a list of ports
-        which are already used). This function then substracts unavailable ports
-        from the other ones and returns one of available ones randomly.
-
-        :param port_pool: A list of ports used for fake capsules (for RHEL7+: don't
-            forget to set a correct selinux context before otherwise you'll get
-            Connection Refused error)
-
-        :return: Random available port from interval <9091, 9190>.
-        :rtype: int
-        """
-        if port_pool is None:
-            from robottelo.config import settings
-
-            port_pool_range = settings.fake_capsules.port_range
-            if isinstance(port_pool_range, str):
-                port_pool_range = tuple(port_pool_range.split('-'))
-            if isinstance(port_pool_range, tuple) and len(port_pool_range) == 2:
-                port_pool = range(int(port_pool_range[0]), int(port_pool_range[1]))
-            else:
-                raise TypeError(
-                    'Expected type of port_range is a tuple of 2 elements,'
-                    f'got {type(port_pool_range)} instead'
-                )
-        # returns a list of strings
-        ss_cmd = self.execute(
-            f"ss -tnaH sport ge {port_pool[0]} sport le {port_pool[-1]}"
-            " | awk '{n=split($4, p, \":\"); print p[n]}' | sort -u"
-        )
-        if ss_cmd.stderr[1]:
-            raise CapsuleTunnelError(
-                f'Failed to create ssh tunnel: Error getting port status: {ss_cmd.stderr}'
-            )
-        # converts a List of strings to a List of integers
-        try:
-            used_ports = map(
-                int, [val for val in ss_cmd.stdout.splitlines()[:-1] if val != 'Cannot stat file ']
-            )
-
-        except ValueError:
-            raise CapsuleTunnelError(
-                f'Failed parsing the port numbers from stdout: {ss_cmd.stdout.splitlines()[:-1]}'
-            )
-        try:
-            # take the list of available ports and return randomly selected one
-            return random.choice([port for port in port_pool if port not in used_ports])
-        except IndexError:
-            raise CapsuleTunnelError(
-                'Failed to create ssh tunnel: No more ports available for mapping'
-            )
-
-    @contextlib.contextmanager
-    def default_url_on_new_port(self, oldport, newport):
-        """Creates context where the default capsule is forwarded on a new port
-
-        :param int oldport: Port to be forwarded.
-        :param int newport: New port to be used to forward `oldport`.
-
-        :return: A string containing the new capsule URL with port.
-        :rtype: str
-
-        """
-        pre_ncat_procs = self.execute('pgrep ncat').stdout.splitlines()
-        with self.session.shell() as channel:
-            # if ncat isn't backgrounded, it prevents the channel from closing
-            command = f'ncat -kl -p {newport} -c "ncat {self.hostname} {oldport}" &'
-            logger.debug(f'Creating tunnel: {command}')
-            channel.send(command)
-            post_ncat_procs = self.execute('pgrep ncat').stdout.splitlines()
-            ncat_pid = set(post_ncat_procs).difference(set(pre_ncat_procs))
-            if not len(ncat_pid):
-                stderr = channel.get_exit_status()[1]
-                logger.debug(f'Tunnel failed: {stderr}')
-                # Something failed, so raise an exception.
-                raise CapsuleTunnelError(f'Starting ncat failed: {stderr}')
-            forward_url = f'https://{self.hostname}:{newport}'
-            logger.debug(f'Yielding capsule forward port url: {forward_url}')
-            try:
-                yield forward_url
-            finally:
-                logger.debug(f'Killing ncat pid: {ncat_pid}')
-                self.execute(f'kill {ncat_pid.pop()}')
-
     def wait_for_tasks(
-        self, search_query, search_rate=1, max_tries=10, poll_rate=None, poll_timeout=None
+        self,
+        search_query,
+        search_rate=1,
+        max_tries=10,
+        poll_rate=None,
+        poll_timeout=None,
+        must_succeed=True,
     ):
         """Search for tasks by specified search query and poll them to ensure that
         task has finished.
@@ -108,17 +47,105 @@ class CapsuleInfo:
             the start of the next check-up. Parameter for ``sat.api.ForemanTask.poll()`` method.
         :param poll_timeout: Maximum number of seconds to wait until timing out.
             Parameter for ``sat.api.ForemanTask.poll()`` method.
-        :return: List of ``sat.api.ForemanTasks`` entities.
+        :param must_succeed: Assert success result on finished task.
+        :return: List of ``sat.api.ForemanTask`` entities.
         :raises: ``AssertionError``. If not tasks were found until timeout.
         """
         for _ in range(max_tries):
-            tasks = self.api.ForemanTask().search(query={'search': search_query})
+            tasks = self.satellite.api.ForemanTask().search(query={'search': search_query})
             if tasks:
                 for task in tasks:
-                    task.poll(poll_rate=poll_rate, timeout=poll_timeout)
+                    task.poll(poll_rate=poll_rate, timeout=poll_timeout, must_succeed=must_succeed)
                 break
-            else:
-                time.sleep(search_rate)
+            time.sleep(search_rate)
         else:
             raise AssertionError(f"No task was found using query '{search_query}'")
         return tasks
+
+    def wait_for_sync(self, start_time=None, timeout=600):
+        """Wait for capsule sync to finish and assert success.
+        Assert that a task to sync lifecycle environment to the
+        capsule is started (or finished already), and succeeded.
+        :raises: ``AssertionError``: If a capsule sync verification fails based on the conditions.
+
+        - Found some active sync task(s) for capsule, or it just finished (recent sync time).
+        - Any active sync task(s) polled, succeeded, and the capsule last_sync_time is updated.
+        - last_sync_time after final task is on or newer than start_time.
+        - The total sync time duration (seconds) is within timeout and not negative.
+
+        :param start_time: (datetime): UTC time to compare against capsule's last_sync_time.
+            Default: None (current UTC).
+        :param timeout: (int) maximum seconds for active task(s) and queries to finish.
+
+        :return:
+            list of polled finished tasks that were in-progress from `active_sync_tasks`.
+        """
+        # Fetch initial capsule sync status
+        logger.info(f"Waiting for capsule {self.hostname} sync to finish ...")
+        sync_status = self.nailgun_capsule.content_get_sync(timeout=timeout, synchronous=True)
+        # Current UTC time for start_time, if not provided
+        if start_time is None:
+            start_time = datetime.utcnow().replace(microsecond=0)
+        # 1s margin of safety for rounding
+        start_time = (
+            (start_time - timedelta(seconds=1))
+            .replace(microsecond=0)
+            .strftime('%Y-%m-%d %H:%M:%S UTC')
+        )
+        # Assert presence of recent sync activity:
+        #   one or more ongoing sync tasks for the capsule,
+        #   Or, capsule's last_sync_time is on or after start_time
+        assert len(sync_status['active_sync_tasks']) or (
+            parse(sync_status['last_sync_time']) >= parse(start_time)
+        ), (
+            f"No active or recent sync found for capsule {self.hostname}."
+            f" `active_sync_tasks` was empty: {sync_status['active_sync_tasks']},"
+            f" and the `last_sync_time`: {sync_status['last_sync_time']},"
+            f" was prior to the `start_time`: {start_time}."
+        )
+        sync_tasks = []
+        # Poll and verify succeeds, any active sync task from initial status.
+        logger.info(f"Active tasks: {sync_status['active_sync_tasks']}")
+        for task in sync_status['active_sync_tasks']:
+            sync_tasks.append(self.satellite.api.ForemanTask(id=task['id']).poll(timeout=timeout))
+            logger.info(f"Active sync task :id {task['id']} succeeded.")
+
+        # Fetch updated capsule status (expect no ongoing sync)
+        logger.info(f"Querying updated sync status from capsule {self.hostname}.")
+        updated_status = self.nailgun_capsule.content_get_sync(timeout=timeout, synchronous=True)
+        # Last sync task end time is the same as capsule's last sync time.
+        assert parse(updated_status['last_sync_time']) == parse(
+            updated_status['last_sync_task']['ended_at']
+        ), f"`last_sync_time` does not match final task's end time. Capsule: {self.hostname}"
+
+        # Total time taken is not negative (sync prior to start_time),
+        # and did not exceed timeout.
+        assert (
+            timedelta(seconds=0)
+            <= parse(updated_status['last_sync_time']) - parse(start_time)
+            <= timedelta(seconds=timeout)
+        ), (
+            f"No recent sync task(s) were found for capsule: {self.hostname}, or task(s) timed out."
+            f" `last_sync_time`: ({updated_status['last_sync_time']}) was prior to `start_time`: ({start_time})"
+            f" or exceeded timeout ({timeout}s)."
+        )
+        # No failed or active tasks remaining
+        assert len(updated_status['last_failed_sync_tasks']) == 0
+        assert len(updated_status['active_sync_tasks']) == 0
+
+        # return any polled sync tasks, that were initially in-progress
+        return sync_tasks
+
+    def get_published_repo_url(self, org, prod, repo, lce=None, cv=None):
+        """Forms url of a repo or CV published on a Satellite or Capsule.
+
+        :param str org: organization label
+        :param str prod: product label
+        :param str repo: repository label
+        :param str lce: lifecycle environment label
+        :param str cv: content view label
+        :return: url of the specific repo or CV
+        """
+        if lce and cv:
+            return f'{self.url}/pulp/content/{org}/{lce}/{cv}/custom/{prod}/{repo}/'
+        return f'{self.url}/pulp/content/{org}/Library/custom/{prod}/{repo}/'

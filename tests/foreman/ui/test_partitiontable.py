@@ -4,28 +4,22 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Hosts
 
-:Assignee: pdragun
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
+import pytest
 
-from robottelo.constants import PARTITION_SCRIPT_DATA_FILE
-from robottelo.helpers import read_data_file
+from robottelo.constants import DataFile
 
 
 @pytest.fixture(scope='module')
 def template_data():
-    return read_data_file(PARTITION_SCRIPT_DATA_FILE)
+    return DataFile.PARTITION_SCRIPT_DATA_FILE.read_text()
 
 
 @pytest.mark.tier2
@@ -37,8 +31,6 @@ def test_positive_create_default_for_organization(session):
 
     :expectedresults: New partition table is created and is present in the
         list of selected partition tables for any new organization
-
-    :CaseLevel: Integration
 
     :CaseImportance: Medium
     """
@@ -67,8 +59,6 @@ def test_positive_create_custom_organization(session):
     :expectedresults: New partition table is created and is not present in
         the list of selected partition tables for any new organization
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
     """
     name = gen_string('alpha')
@@ -95,8 +85,6 @@ def test_positive_create_default_for_location(session):
 
     :expectedresults: New partition table is created and is present in the
         list of selected partition tables for any new location
-
-    :CaseLevel: Integration
 
     :CaseImportance: Medium
     """
@@ -125,8 +113,6 @@ def test_positive_create_custom_location(session):
     :expectedresults: New partition table is created and is not present in
         the list of selected partition tables for any new location
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
     """
     name = gen_string('alpha')
@@ -153,8 +139,6 @@ def test_positive_delete_with_lock_and_unlock(session):
     :expectedresults: New partition table is created and not deleted when
         locked and only deleted after unlock
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
     """
     name = gen_string('alpha')
@@ -168,7 +152,7 @@ def test_positive_delete_with_lock_and_unlock(session):
         )
         assert session.partitiontable.search(name)[0]['Name'] == name
         session.partitiontable.lock(name)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError):  # noqa: PT011 - TODO determine better exception
             session.partitiontable.delete(name)
         session.partitiontable.unlock(name)
         session.partitiontable.delete(name)
@@ -182,8 +166,6 @@ def test_positive_clone(session):
     :id: 6050f66f-82e0-4694-a482-5ea449ed9a9d
 
     :expectedresults: New partition table is created and cloned successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: Medium
     """
@@ -211,6 +193,7 @@ def test_positive_clone(session):
 
 
 @pytest.mark.tier2
+@pytest.mark.e2e
 @pytest.mark.upgrade
 def test_positive_end_to_end(session, module_org, module_location, template_data):
     """Perform end to end testing for partition table component
@@ -218,8 +201,6 @@ def test_positive_end_to_end(session, module_org, module_location, template_data
     :id: ade8e9b8-01a7-476b-ad01-f3e6c119ec25
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """

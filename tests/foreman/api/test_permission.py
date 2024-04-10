@@ -8,31 +8,26 @@ http://<satellite-host>/apidoc/v2/permissions.html
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: UsersRoles
 
-:Assignee: dsynk
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
+from itertools import chain
 import json
 import re
-from itertools import chain
 
-import pytest
 from fauxfactory import gen_alphanumeric
 from nailgun import entities
 from nailgun.entity_fields import OneToManyField
+import pytest
 from requests.exceptions import HTTPError
 
+from robottelo.config import user_nailgun_config
 from robottelo.constants import PERMISSIONS
-from robottelo.datafactory import parametrized
-from robottelo.helpers import get_nailgun_config
+from robottelo.utils.datafactory import parametrized
 
 
 class TestPermission:
@@ -72,7 +67,7 @@ class TestPermission:
         cls.permission_names = list(chain.from_iterable(cls.permissions.values()))
 
     @pytest.mark.tier1
-    def test_positive_search_by_name(self):
+    def test_positive_search_by_name(self, target_sat):
         """Search for a permission by name.
 
         :id: 1b6117f6-599d-4b2d-80a8-1e0764bdc04d
@@ -84,7 +79,9 @@ class TestPermission:
         """
         failures = {}
         for permission_name in self.permission_names:
-            results = entities.Permission().search(query={'search': f'name="{permission_name}"'})
+            results = target_sat.api.Permission().search(
+                query={'search': f'name="{permission_name}"'}
+            )
             if len(results) != 1 or len(results) == 1 and results[0].name != permission_name:
                 failures[permission_name] = {
                     'length': len(results),
@@ -95,7 +92,7 @@ class TestPermission:
             pytest.fail(json.dumps(failures, indent=True, sort_keys=True))
 
     @pytest.mark.tier1
-    def test_positive_search_by_resource_type(self):
+    def test_positive_search_by_resource_type(self, target_sat):
         """Search for permissions by resource type.
 
         :id: 29d9362b-1bf3-4722-b40f-a5e8b4d0d9ba
@@ -109,7 +106,7 @@ class TestPermission:
         for resource_type in self.permission_resource_types:
             if resource_type is None:
                 continue
-            perm_group = entities.Permission().search(
+            perm_group = target_sat.api.Permission().search(
                 query={'search': f'resource_type="{resource_type}"'}
             )
             permissions = {perm.name for perm in perm_group}
@@ -128,7 +125,7 @@ class TestPermission:
             pytest.fail(json.dumps(failures, indent=True, sort_keys=True))
 
     @pytest.mark.tier1
-    def test_positive_search(self):
+    def test_positive_search(self, target_sat):
         """search with no parameters return all permissions
 
         :id: e58308df-19ec-415d-8fa1-63ebf3cd0ad6
@@ -137,7 +134,7 @@ class TestPermission:
 
         :CaseImportance: Critical
         """
-        permissions = entities.Permission().search(query={'per_page': '1000'})
+        permissions = target_sat.api.Permission().search(query={'per_page': '1000'})
         names = {perm.name for perm in permissions}
         resource_types = {perm.resource_type for perm in permissions}
         expected_names = set(self.permission_names)
@@ -164,18 +161,20 @@ class TestPermission:
 
 # FIXME: This method is a hack. This information should somehow be tied
 # directly to the `Entity` classes.
-def _permission_name(entity, which_perm):
-    """Find a permission name.
+def _permission_names(entity, which_perm: str) -> list:
+    """Find permission names.
 
-    Attempt to locate a permission in :data:`robottelo.constants.PERMISSIONS`.
-    For example, return 'view_architectures' if ``entity`` is ``Architecture``
-    and ``which_perm`` is 'read'.
+    Attempt to locate permissions in :data:`robottelo.constants.PERMISSIONS`.
+
+    Examples:
+        _permission_names('Architecture', 'read') -> ['view_architectures']
+        _permission_names('Host', 'delete') -> ['destroy_discovered_hosts', 'destroy_hosts']
 
     :param entity: A ``nailgun.entity_mixins.Entity`` subclass.
     :param str which_perm: Either the word "create", "read", "update" or
         "delete".
-    :raise: ``LookupError`` if a relevant permission cannot be found, or if
-        multiple results are found.
+    :raise: ``LookupError`` if a relevant permission cannot be found
+    :returns: list of found permission names
     """
     pattern = {'create': '^create_', 'delete': '^destroy_', 'read': '^view_', 'update': '^edit_'}[
         which_perm
@@ -184,11 +183,11 @@ def _permission_name(entity, which_perm):
     permissions = PERMISSIONS.get(entity.__name__) or PERMISSIONS.get(f'Katello::{entity.__name__}')
     for permission in permissions:
         match = re.match(pattern, permission)
-        if match is not None:
+        if match:
             perm_names.append(permission)
-    if len(perm_names) != 1:
-        raise LookupError(f'Could not find the requested permission. Found: {perm_names}')
-    return perm_names[0]
+    if not perm_names:
+        raise LookupError(f'Could not find any "{which_perm}" permission for entity "{entity}"')
+    return perm_names
 
 
 # This class might better belong in module test_multiple_paths.
@@ -196,18 +195,17 @@ class TestUserRole:
     """Give a user various permissions and see if they are enforced."""
 
     @pytest.fixture(autouse=True)
-    def create_user(self, class_org, class_location):
+    def create_user(self, target_sat, class_org, class_location):
         """Create a set of credentials and a user."""
-        self.cfg = get_nailgun_config()
-        self.cfg.auth = (gen_alphanumeric(), gen_alphanumeric())  # user, pass
-        self.user = entities.User(
+        self.cfg = user_nailgun_config(gen_alphanumeric(), gen_alphanumeric())
+        self.user = target_sat.api.User(
             login=self.cfg.auth[0],
             password=self.cfg.auth[1],
             organization=[class_org],
             location=[class_location],
         ).create()
 
-    def give_user_permission(self, perm_name):
+    def give_user_permission(self, perm_name, target_sat):
         """Give ``self.user`` the ``perm_name`` permission.
 
         This method creates a role and filter to accomplish the above goal.
@@ -223,12 +221,21 @@ class TestUserRole:
             updating ``self.user``'s roles.
         :returns: Nothing.
         """
-        role = entities.Role().create()
-        permissions = entities.Permission().search(query={'search': f'name="{perm_name}"'})
+        role = target_sat.api.Role().create()
+        permissions = target_sat.api.Permission().search(query={'search': f'name="{perm_name}"'})
         assert len(permissions) == 1
-        entities.Filter(permission=permissions, role=role).create()
+        target_sat.api.Filter(permission=permissions, role=role).create()
         self.user.role += [role]
         self.user = self.user.update(['role'])
+
+    def give_user_permissions(self, perm_names, target_sat):
+        """Give ``self.user`` multiple permissions.
+        Otherwise, works the same as method ``self.give_user_permission``.
+
+        :param list perm_names: permission names
+        """
+        for perm_name in perm_names:
+            self.give_user_permission(perm_name, target_sat)
 
     def set_taxonomies(self, entity, organization=None, location=None):
         """Set organization and location for entity if it supports them.
@@ -260,7 +267,7 @@ class TestUserRole:
         'entity_cls',
         **parametrized([entities.Architecture, entities.Domain, entities.ActivationKey]),
     )
-    def test_positive_check_create(self, entity_cls, class_org, class_location):
+    def test_positive_check_create(self, entity_cls, class_org, class_location, target_sat):
         """Check whether the "create_*" role has an effect.
 
         :id: e4c92365-58b7-4538-9d1b-93f3cf51fbef
@@ -277,14 +284,14 @@ class TestUserRole:
         """
         with pytest.raises(HTTPError):
             entity_cls(self.cfg).create()
-        self.give_user_permission(_permission_name(entity_cls, 'create'))
+        self.give_user_permissions(_permission_names(entity_cls, 'create'), target_sat)
         new_entity = self.set_taxonomies(entity_cls(self.cfg), class_org, class_location)
         # Entities with both org and loc require
         # additional permissions to set them.
         fields = {'organization', 'location'}
         if fields.issubset(set(new_entity.get_fields())):
-            self.give_user_permission('assign_organizations')
-            self.give_user_permission('assign_locations')
+            self.give_user_permission('assign_organizations', target_sat)
+            self.give_user_permission('assign_locations', target_sat)
         new_entity = new_entity.create_json()
         entity_cls(id=new_entity['id']).read()  # As admin user.
 
@@ -293,7 +300,7 @@ class TestUserRole:
         'entity_cls',
         **parametrized([entities.Architecture, entities.Domain, entities.ActivationKey]),
     )
-    def test_positive_check_read(self, entity_cls, class_org, class_location):
+    def test_positive_check_read(self, entity_cls, class_org, class_location, target_sat):
         """Check whether the "view_*" role has an effect.
 
         :id: 55689121-2646-414f-beb1-dbba5973c523
@@ -311,16 +318,18 @@ class TestUserRole:
         new_entity = new_entity.create()
         with pytest.raises(HTTPError):
             entity_cls(self.cfg, id=new_entity.id).read()
-        self.give_user_permission(_permission_name(entity_cls, 'read'))
+        self.give_user_permissions(_permission_names(entity_cls, 'read'), target_sat)
         entity_cls(self.cfg, id=new_entity.id).read()
 
     @pytest.mark.upgrade
     @pytest.mark.tier1
     @pytest.mark.parametrize(
         'entity_cls',
-        **parametrized([entities.Architecture, entities.Domain, entities.ActivationKey]),
+        **parametrized(
+            [entities.Architecture, entities.Domain, entities.ActivationKey, entities.Host]
+        ),
     )
-    def test_positive_check_delete(self, entity_cls, class_org, class_location):
+    def test_positive_check_delete(self, entity_cls, class_org, class_location, target_sat):
         """Check whether the "destroy_*" role has an effect.
 
         :id: 71365147-51ef-4602-948f-78a5e78e32b4
@@ -338,7 +347,7 @@ class TestUserRole:
         new_entity = new_entity.create()
         with pytest.raises(HTTPError):
             entity_cls(self.cfg, id=new_entity.id).delete()
-        self.give_user_permission(_permission_name(entity_cls, 'delete'))
+        self.give_user_permissions(_permission_names(entity_cls, 'delete'), target_sat)
         entity_cls(self.cfg, id=new_entity.id).delete()
         with pytest.raises(HTTPError):
             new_entity.read()  # As admin user
@@ -348,7 +357,7 @@ class TestUserRole:
         'entity_cls',
         **parametrized([entities.Architecture, entities.Domain, entities.ActivationKey]),
     )
-    def test_positive_check_update(self, entity_cls, class_org, class_location):
+    def test_positive_check_update(self, entity_cls, class_org, class_location, target_sat):
         """Check whether the "edit_*" role has an effect.
 
         :id: b5de2115-b031-413e-8e5b-eac8cb714174
@@ -367,9 +376,20 @@ class TestUserRole:
         new_entity = self.set_taxonomies(entity_cls(), class_org, class_location)
         new_entity = new_entity.create()
         name = new_entity.get_fields()['name'].gen_value()
+        if entity_cls is entities.ActivationKey:
+            update_entity = entity_cls(
+                self.cfg, id=new_entity.id, name=name, organization=class_org
+            )
+        else:
+            update_entity = entity_cls(self.cfg, id=new_entity.id, name=name)
         with pytest.raises(HTTPError):
-            entity_cls(self.cfg, id=new_entity.id, name=name).update(['name'])
-        self.give_user_permission(_permission_name(entity_cls, 'update'))
+            update_entity.update(['name'])
+        self.give_user_permissions(_permission_names(entity_cls, 'update'), target_sat)
         # update() calls read() under the hood, which triggers
         # permission error
-        entity_cls(self.cfg, id=new_entity.id, name=name).update_json(['name'])
+        if entity_cls is entities.ActivationKey:
+            entity_cls(self.cfg, id=new_entity.id, name=name, organization=class_org).update_json(
+                ['name']
+            )
+        else:
+            entity_cls(self.cfg, id=new_entity.id, name=name).update_json(['name'])

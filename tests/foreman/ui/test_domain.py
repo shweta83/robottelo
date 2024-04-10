@@ -4,23 +4,17 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Hosts
 
-:Assignee: pdragun
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
-from nailgun import entities
+import pytest
 
-from robottelo.datafactory import valid_domain_names
+from robottelo.utils.datafactory import valid_domain_names
 
 
 @pytest.fixture
@@ -40,8 +34,6 @@ def test_positive_set_parameter(session, valid_domain_name, param_value):
     :parametrized: yes
 
     :expectedresults: Domain parameter is created.
-
-    :CaseLevel: Integration
     """
     new_param = {'name': gen_string('alpha', 255), 'value': param_value}
     with session:
@@ -61,8 +53,6 @@ def test_negative_set_parameter(session, valid_domain_name):
     :id: 1c647d66-6a3f-4d88-8e6b-60f2fc7fd603
 
     :expectedresults: Domain parameter is not updated. Error is raised
-
-    :CaseLevel: Integration
 
     :CaseImportance: Medium
     """
@@ -85,8 +75,6 @@ def test_negative_set_parameter_same(session, valid_domain_name):
 
     :expectedresults: Domain parameter with same values is not created.
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
     """
     param_name = gen_string('alpha')
@@ -108,8 +96,6 @@ def test_positive_remove_parameter(session, valid_domain_name):
 
     :expectedresults: Domain parameter is removed
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
     """
     param_name = gen_string('alpha')
@@ -123,16 +109,17 @@ def test_positive_remove_parameter(session, valid_domain_name):
         assert param_name not in [param['name'] for param in params]
 
 
+@pytest.mark.e2e
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_end_to_end(session, module_org, module_location, valid_domain_name):
+def test_positive_end_to_end(
+    session, module_org, module_location, valid_domain_name, module_target_sat
+):
     """Perform end to end testing for domain component
 
     :id: ce90fd87-3e63-4298-a771-38f4aacce091
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """
@@ -162,4 +149,4 @@ def test_positive_end_to_end(session, module_org, module_location, valid_domain_
         assert session.domain.search(new_name)[0]['Description'] == new_name
         # Delete domain
         session.domain.delete(new_name)
-        assert not entities.Domain().search(query={'search': f'name={new_name}'})
+        assert not module_target_sat.api.Domain().search(query={'search': f'name={new_name}'})

@@ -4,42 +4,32 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: API
 
-:Assignee: gtalreja
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import http
-import random
 from collections import defaultdict
+import http
 from pprint import pformat
 
-import pytest
 from deepdiff import DeepDiff
 from fauxfactory import gen_string
-from nailgun import client
-from nailgun import entities
+from nailgun import client, entities
+import pytest
 
 from robottelo import constants
-from robottelo import manifests
-from robottelo.api.utils import enable_rhrepo_and_fetchid
-from robottelo.api.utils import promote
-from robottelo.api.utils import upload_manifest
-from robottelo.config import get_credentials
-from robottelo.config import get_url
-from robottelo.config import setting_is_set
-from robottelo.config import settings
+from robottelo.config import (
+    get_credentials,
+    get_url,
+    setting_is_set,
+    settings,
+    user_nailgun_config,
+)
 from robottelo.constants.repos import CUSTOM_RPM_REPO
-from robottelo.helpers import get_nailgun_config
 from robottelo.utils.issue_handlers import is_open
-
 
 API_PATHS = {
     # flake8:noqa (line-too-long)
@@ -57,6 +47,19 @@ API_PATHS = {
         '/katello/api/activation_keys/:id/releases',
         '/katello/api/activation_keys/:id/remove_subscriptions',
     ),
+    'alternate_content_sources': (
+        '/katello/api/alternate_content_sources',
+        '/katello/api/alternate_content_sources/:id',
+        '/katello/api/alternate_content_sources',
+        '/katello/api/alternate_content_sources/:id',
+        '/katello/api/alternate_content_sources/:id',
+        '/katello/api/alternate_content_sources/:id/refresh',
+    ),
+    'alternate_content_sources_bulk_actions': (
+        '/katello/api/alternate_content_sources/bulk/destroy',
+        '/katello/api/alternate_content_sources/bulk/refresh',
+        '/katello/api/alternate_content_sources/bulk/refresh_all',
+    ),
     'ansible_collections': (
         '/katello/api/ansible_collections',
         '/katello/api/ansible_collections/compare',
@@ -70,6 +73,10 @@ API_PATHS = {
     'ansible_override_values': (
         '/ansible/api/ansible_override_values',
         '/ansible/api/ansible_override_values/:id',
+    ),
+    'ansible_playbooks': (
+        '/ansible/api/ansible_playbooks/fetch',
+        '/ansible/api/ansible_playbooks/sync',
     ),
     'ansible_roles': (
         '/ansible/api/ansible_roles',
@@ -140,6 +147,8 @@ API_PATHS = {
         '/katello/api/systems/:id/enabled_repos',
     ),
     'capsule_content': (
+        '/katello/api/capsules/:id/content/counts',
+        '/katello/api/capsules/:id/content/update_counts',
         '/katello/api/capsules/:id/content/available_lifecycle_environments',
         '/katello/api/capsules/:id/content/lifecycle_environments',
         '/katello/api/capsules/:id/content/lifecycle_environments',
@@ -147,7 +156,7 @@ API_PATHS = {
         '/katello/api/capsules/:id/content/sync',
         '/katello/api/capsules/:id/content/sync',
         '/katello/api/capsules/:id/content/sync',
-        '/katello/api/capsules/:id/reclaim_space',
+        '/katello/api/capsules/:id/content/reclaim_space',
     ),
     'capsules': ('/katello/api/capsules', '/katello/api/capsules/:id'),
     'common_parameters': (
@@ -269,6 +278,7 @@ API_PATHS = {
         '/katello/api/content_views/:id',
         '/katello/api/content_views/:id',
         '/katello/api/content_views/:id',
+        '/katello/api/content_views/:id/bulk_delete_versions',
         '/katello/api/content_views/:id/copy',
         '/katello/api/content_views/:id/environments/:environment_id',
         '/katello/api/content_views/:id/publish',
@@ -309,7 +319,7 @@ API_PATHS = {
         '/api/v2/discovery_rules/:id',
         '/api/v2/discovery_rules/:id',
     ),
-    'disks': ('/bootdisk/api', '/bootdisk/api/generic', '/bootdisk/api/hosts/:host_id'),
+    'disks': ('/api/bootdisk', '/api/bootdisk/generic', '/api/bootdisk/hosts/:host_id'),
     'docker_manifests': (
         '/katello/api/docker_manifests/:id',
         '/katello/api/docker_manifests/compare',
@@ -334,6 +344,7 @@ API_PATHS = {
         '/katello/api/errata/compare',
         '/katello/api/errata/:id',
     ),
+    'exports': (),
     'external_usergroups': (
         '/api/usergroups/:usergroup_id/external_usergroups',
         '/api/usergroups/:usergroup_id/external_usergroups',
@@ -396,6 +407,7 @@ API_PATHS = {
         '/api/hosts/:host_id/subscriptions/add_subscriptions',
         '/api/hosts/:host_id/subscriptions/auto_attach',
         '/api/hosts/:host_id/subscriptions/available_release_versions',
+        '/api/hosts/:host_id/subscriptions/enabled_repositories',
         '/api/hosts/:host_id/subscriptions/content_override',
         '/api/hosts/:host_id/subscriptions/product_content',
         '/api/hosts/subscriptions',
@@ -415,6 +427,8 @@ API_PATHS = {
         '/api/hostgroups/:id/play_roles',
         '/api/hostgroups/multiple_play_roles',
         '/api/hostgroups/:id/ansible_roles',
+        '/api/hostgroups/:id/ansible_roles/:ansible_role_id',
+        '/api/hostgroups/:id/ansible_roles/:ansible_role_id',
         '/api/hostgroups/:id/assign_ansible_roles',
     ),
     'hosts': (
@@ -437,11 +451,16 @@ API_PATHS = {
         '/api/hosts/:id/play_roles',
         '/api/hosts/multiple_play_roles',
         '/api/hosts/:id/ansible_roles',
+        '/api/hosts/:id/ansible_roles/:ansible_role_id',
+        '/api/hosts/:id/ansible_roles/:ansible_role_id',
         '/api/hosts/:id/assign_ansible_roles',
         '/api/hosts/:host_id/host_collections',
         '/api/hosts/:id/policies_enc',
+        '/api/hosts/:id/templates',
+        '/api/hosts/:id/inherited_parameters',
     ),
     'hosts_bulk_actions': (
+        '/api/hosts/bulk',
         '/api/hosts/bulk/add_host_collections',
         '/api/hosts/bulk/remove_host_collections',
         '/api/hosts/bulk/add_subscriptions',
@@ -451,11 +470,9 @@ API_PATHS = {
         '/api/hosts/bulk/installable_errata',
         '/api/hosts/bulk/available_incremental_updates',
         '/api/hosts/bulk/content_overrides',
+        '/api/hosts/bulk/change_content_source',
         '/api/hosts/bulk/destroy',
         '/api/hosts/bulk/environment_content_view',
-        '/api/hosts/bulk/install_content',
-        '/api/hosts/bulk/update_content',
-        '/api/hosts/bulk/remove_content',
         '/api/hosts/bulk/module_streams',
         '/api/hosts/bulk/release_version',
         '/api/hosts/bulk/resolve_traces',
@@ -466,14 +483,8 @@ API_PATHS = {
         '/api/hosts/:host_id/errata',
         '/api/hosts/:host_id/errata/:id',
         '/api/hosts/:host_id/errata/applicability',
-        '/api/hosts/:host_id/errata/apply',
     ),
-    'host_packages': (
-        '/api/hosts/:host_id/packages',
-        '/api/hosts/:host_id/packages/install',
-        '/api/hosts/:host_id/packages/remove',
-        '/api/hosts/:host_id/packages/upgrade_all',
-    ),
+    'host_packages': ('/api/hosts/:host_id/packages',),
     'http_proxies': (
         '/api/http_proxies',
         '/api/http_proxies',
@@ -497,6 +508,7 @@ API_PATHS = {
         '/api/organizations/:organization_id/rh_cloud/report',
         '/api/organizations/:organization_id/rh_cloud/report',
         '/api/organizations/:organization_id/rh_cloud/inventory_sync',
+        '/api/organizations/:organization_id/rh_cloud/missing_hosts',
         '/api/rh_cloud/enable_connector',
     ),
     'interfaces': (
@@ -615,8 +627,6 @@ API_PATHS = {
     ),
     'oval_reports': ('/api/compliance/oval_reports/:cname/:oval_policy_id/:date',),
     'package_groups': (
-        '/katello/api/package_group',
-        '/katello/api/package_group',
         '/katello/api/package_groups/:id',
         '/katello/api/package_groups/compare',
     ),
@@ -709,12 +719,14 @@ API_PATHS = {
         '/api/remote_execution_features',
         '/api/remote_execution_features/:id',
         '/api/remote_execution_features/:id',
+        '/api/api/hosts/:id/available_remote_execution_features',
     ),
     'scap_content_profiles': ('/api/compliance/scap_content_profiles',),
     'simple_content_access': (
         '/katello/api/organizations/:organization_id/simple_content_access/eligible',
         '/katello/api/organizations/:organization_id/simple_content_access/enable',
         '/katello/api/organizations/:organization_id/simple_content_access/disable',
+        '/katello/api/organizations/:organization_id/simple_content_access/status',
     ),
     'registration': ('/api/register', '/api/register'),
     'registration_commands': ('/api/registration_commands',),
@@ -751,6 +763,7 @@ API_PATHS = {
         '/katello/api/repositories/:id/verify_checksum',
         '/katello/api/content_types',
         '/katello/api/repositories/:id/reclaim_space',
+        '/katello/api/repositories/compare',
     ),
     'repository_sets': (
         '/katello/api/repository_sets',
@@ -784,6 +797,7 @@ API_PATHS = {
         '/api/smart_proxies/:id',
         '/api/smart_proxies/:id',
         '/api/smart_proxies/:id',
+        '/api/smart_proxies/:id/import_subnets',
         '/api/smart_proxies/:id/refresh',
     ),
     'smart_proxy_hosts': (
@@ -798,7 +812,7 @@ API_PATHS = {
         '/api/users/:user_id/ssh_keys/:id',
         '/api/users/:user_id/ssh_keys/:id',
     ),
-    'subnet_disks': ('/bootdisk/api', '/bootdisk/api/subnets/:subnet_id'),
+    'subnet_disks': ('/api/bootdisk', '/api/bootdisk/subnets/:subnet_id'),
     'subnets': (
         '/api/subnets',
         '/api/subnets',
@@ -825,7 +839,7 @@ API_PATHS = {
         '/katello/api/sync_plans',
         '/katello/api/sync_plans/:id/sync',
     ),
-    'sync': ('/katello/api/organizations/:organization_id/products/:product_id/sync',),
+    'sync': ('/katello/api/repositories/:repository_id/sync',),
     'tailoring_files': (
         '/api/compliance/tailoring_files',
         '/api/compliance/tailoring_files',
@@ -880,6 +894,7 @@ API_PATHS = {
         '/api/users',
         '/api/users/:id',
         '/api/users/:id',
+        '/api/users/extlogin',
     ),
     'webhooks': (
         '/api/webhooks',
@@ -887,6 +902,7 @@ API_PATHS = {
         '/api/webhooks',
         '/api/webhooks/:id',
         '/api/webhooks/:id',
+        '/api/webhooks/:id/test',
         '/api/webhooks/events',
     ),
     'webhook_templates': (
@@ -928,7 +944,6 @@ class TestAvailableURLs:
         """We want to delay referencing get_url() until test execution"""
         return f'{get_url()}/api/v2'
 
-    @pytest.mark.build_sanity
     def test_positive_get_status_code(self, api_url):
         """GET ``api/v2`` and examine the response.
 
@@ -990,7 +1005,6 @@ class TestEndToEnd:
     def fake_manifest_is_set(self):
         return setting_is_set('fake_manifest')
 
-    @pytest.mark.build_sanity
     def test_positive_find_default_org(self):
         """Check if 'Default Organization' is present
 
@@ -1004,7 +1018,6 @@ class TestEndToEnd:
         assert len(results) == 1
         assert results[0].name == constants.DEFAULT_ORG
 
-    @pytest.mark.build_sanity
     def test_positive_find_default_loc(self):
         """Check if 'Default Location' is present
 
@@ -1030,11 +1043,14 @@ class TestEndToEnd:
 
     @pytest.mark.skip_if_not_set('libvirt')
     @pytest.mark.tier4
+    @pytest.mark.no_containers
+    @pytest.mark.rhel_ver_match('7')
+    @pytest.mark.e2e
     @pytest.mark.upgrade
     @pytest.mark.skipif(
         (not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url'
     )
-    def test_positive_end_to_end(self, fake_manifest_is_set, target_sat, rhel7_contenthost):
+    def test_positive_end_to_end(self, function_entitlement_manifest, target_sat, rhel_contenthost):
         """Perform end to end smoke tests using RH and custom repos.
 
         1. Create a new user with admin permissions
@@ -1063,55 +1079,54 @@ class TestEndToEnd:
         :expectedresults: All tests should succeed and Content should be
             successfully fetched by client.
 
+        :bz: 2216461
+
         :parametrized: yes
         """
         # step 1: Create a new user with admin permissions
         login = gen_string('alphanumeric')
         password = gen_string('alphanumeric')
-        entities.User(admin=True, login=login, password=password).create()
+        target_sat.api.User(admin=True, login=login, password=password).create()
 
         # step 2.1: Create a new organization
-        server_config = get_nailgun_config()
-        server_config.auth = (login, password)
-        org = entities.Organization(server_config).create()
+        user_cfg = user_nailgun_config(login, password)
+        org = target_sat.api.Organization(server_config=user_cfg).create()
+        org.sca_disable()
 
-        # step 2.2: Clone and upload manifest
-        if fake_manifest_is_set:
-            with manifests.clone() as manifest:
-                upload_manifest(org.id, manifest.content)
+        # step 2.2: Upload manifest
+        target_sat.upload_manifest(org.id, function_entitlement_manifest.content)
 
         # step 2.3: Create a new lifecycle environment
-        le1 = entities.LifecycleEnvironment(server_config, organization=org).create()
+        le1 = target_sat.api.LifecycleEnvironment(server_config=user_cfg, organization=org).create()
 
         # step 2.4: Create a custom product
-        prod = entities.Product(server_config, organization=org).create()
+        prod = target_sat.api.Product(server_config=user_cfg, organization=org).create()
         repositories = []
 
         # step 2.5: Create custom YUM repository
-        custom_repo = entities.Repository(
-            server_config, product=prod, content_type='yum', url=CUSTOM_RPM_REPO
+        custom_repo = target_sat.api.Repository(
+            server_config=user_cfg, product=prod, content_type='yum', url=CUSTOM_RPM_REPO
         ).create()
         repositories.append(custom_repo)
 
         # step 2.6: Enable a Red Hat repository
-        if fake_manifest_is_set:
-            rhel_repo = entities.Repository(
-                id=enable_rhrepo_and_fetchid(
-                    basearch='x86_64',
-                    org_id=org.id,
-                    product=constants.PRDS['rhel'],
-                    repo=constants.REPOS['rhst7']['name'],
-                    reposet=constants.REPOSET['rhst7'],
-                )
+        rhel_repo = target_sat.api.Repository(
+            id=target_sat.api_factory.enable_rhrepo_and_fetchid(
+                basearch='x86_64',
+                org_id=org.id,
+                product=constants.PRDS['rhel'],
+                repo=constants.REPOS['rhst7']['name'],
+                reposet=constants.REPOSET['rhst7'],
             )
-            repositories.append(rhel_repo)
+        )
+        repositories.append(rhel_repo)
 
         # step 2.7: Synchronize these two repositories
         for repo in repositories:
             repo.sync()
 
         # step 2.8: Create content view
-        content_view = entities.ContentView(server_config, organization=org).create()
+        content_view = target_sat.api.ContentView(server_config=user_cfg, organization=org).create()
 
         # step 2.9: Associate the YUM and Red Hat repositories to new content view
         content_view.repository = repositories
@@ -1125,7 +1140,7 @@ class TestEndToEnd:
         assert len(content_view.version) == 1
         cv_version = content_view.version[0].read()
         assert len(cv_version.environment) == 1
-        promote(cv_version, le1.id)
+        cv_version.promote(data={'environment_ids': le1.id})
         # check that content view exists in lifecycle
         content_view = content_view.read()
         assert len(content_view.version) == 1
@@ -1133,28 +1148,27 @@ class TestEndToEnd:
 
         # step 2.12: Create a new activation key
         activation_key_name = gen_string('alpha')
-        activation_key = entities.ActivationKey(
+        activation_key = target_sat.api.ActivationKey(
             name=activation_key_name, environment=le1, organization=org, content_view=content_view
         ).create()
 
         # step 2.13: Add the products to the activation key
-        for sub in entities.Subscription(organization=org).search():
+        for sub in target_sat.api.Subscription(organization=org).search():
             if sub.name == constants.DEFAULT_SUBSCRIPTION_NAME:
                 activation_key.add_subscriptions(data={'quantity': 1, 'subscription_id': sub.id})
                 break
         # step 2.13.1: Enable product content
-        if fake_manifest_is_set:
-            activation_key.content_override(
-                data={
-                    'content_overrides': [
-                        {'content_label': constants.REPOS['rhst7']['id'], 'value': '1'}
-                    ]
-                }
-            )
+        activation_key.content_override(
+            data={
+                'content_overrides': [
+                    {'content_label': constants.REPOS['rhst7']['id'], 'value': '1'}
+                ]
+            }
+        )
 
         # BONUS: Create a content host and associate it with promoted
         # content view and last lifecycle where it exists
-        content_host = entities.Host(
+        content_host = target_sat.api.Host(
             content_facet_attributes={
                 'content_view_id': content_view.id,
                 'lifecycle_environment_id': le1.id,
@@ -1162,36 +1176,46 @@ class TestEndToEnd:
             organization=org,
         ).create()
         # check that content view matches what we passed
-        assert content_host.content_facet_attributes['content_view_id'] == content_view.id
+        assert (
+            content_host.content_facet_attributes['content_view_environments'][0]['content_view'][
+                'id'
+            ]
+            == content_view.id
+        )
         # check that lifecycle environment matches
-        assert content_host.content_facet_attributes['lifecycle_environment_id'] == le1.id
+        assert (
+            content_host.content_facet_attributes['content_view_environments'][0][
+                'lifecycle_environment'
+            ]['id']
+            == le1.id
+        )
 
         # step 2.14: Create a new libvirt compute resource
-        entities.LibvirtComputeResource(
-            server_config,
+        target_sat.api.LibvirtComputeResource(
+            server_config=user_cfg,
             url=f'qemu+ssh://root@{settings.libvirt.libvirt_hostname}/system',
         ).create()
 
         # step 2.15: Create a new subnet
-        subnet = entities.Subnet(server_config).create()
+        subnet = target_sat.api.Subnet(server_config=user_cfg).create()
 
         # step 2.16: Create a new domain
-        domain = entities.Domain(server_config).create()
+        domain = target_sat.api.Domain(server_config=user_cfg).create()
 
         # step 2.17: Create a new hostgroup and associate previous entities to it
-        entities.HostGroup(server_config, domain=domain, subnet=subnet).create()
+        target_sat.api.HostGroup(server_config=user_cfg, domain=domain, subnet=subnet).create()
 
         # step 2.18: Provision a client
         # TODO this isn't provisioning through satellite as intended
         # Note it wasn't well before the change that added this todo
-        rhel7_contenthost.install_katello_ca(target_sat)
+        rhel_contenthost.install_katello_ca(target_sat)
         # Register client with foreman server using act keys
-        rhel7_contenthost.register_contenthost(org.label, activation_key_name)
-        assert rhel7_contenthost.subscribed
+        rhel_contenthost.register_contenthost(org.label, activation_key_name)
+        assert rhel_contenthost.subscribed
         # Install rpm on client
         package_name = 'katello-agent'
-        result = rhel7_contenthost.execute(f'yum install -y {package_name}')
+        result = rhel_contenthost.execute(f'yum install -y {package_name}')
         assert result.status == 0
         # Verify that the package is installed by querying it
-        result = rhel7_contenthost.run(f'rpm -q {package_name}')
+        result = rhel_contenthost.run(f'rpm -q {package_name}')
         assert result.status == 0

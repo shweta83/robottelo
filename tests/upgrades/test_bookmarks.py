@@ -4,22 +4,16 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Search
 
-:Assignee: jhenner
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
-from nailgun import entities
 
-from robottelo.constants import BOOKMARK_ENTITIES
+from robottelo.constants import BOOKMARK_ENTITIES_SELECTION
 
 
 class TestPublicDisableBookmark:
@@ -29,13 +23,13 @@ class TestPublicDisableBookmark:
     """
 
     @pytest.mark.pre_upgrade
-    def test_pre_create_public_disable_bookmark(self, request):
+    def test_pre_create_public_disable_bookmark(self, request, target_sat):
         """Create public disabled bookmarks for system entities using available bookmark
         data.
 
         :id: preupgrade-13904b14-6340-4b85-a56f-98080cf50a92
 
-        :Steps:
+        :steps:
 
             1. Create public disabled bookmarks before the upgrade for all system entities
             using available bookmark data.
@@ -51,9 +45,9 @@ class TestPublicDisableBookmark:
         :CaseImportance: Critical
         """
 
-        for entity in BOOKMARK_ENTITIES:
+        for entity in BOOKMARK_ENTITIES_SELECTION:
             book_mark_name = entity["name"] + request.node.name
-            bm = entities.Bookmark(
+            bm = target_sat.api.Bookmark(
                 controller=entity['controller'],
                 name=book_mark_name,
                 public=False,
@@ -66,26 +60,26 @@ class TestPublicDisableBookmark:
             assert not bm.public
 
     @pytest.mark.post_upgrade(depend_on=test_pre_create_public_disable_bookmark)
-    def test_post_create_public_disable_bookmark(self, dependent_scenario_name):
+    def test_post_create_public_disable_bookmark(self, dependent_scenario_name, target_sat):
         """Check the status of public disabled bookmark for all the
         system entities(activation keys, tasks, compute profile, content hosts etc) after upgrade.
 
         :id: postupgrade-13904b14-6340-4b85-a56f-98080cf50a92
 
-        :Steps:
+        :steps:
 
             1. Check the bookmark status after post-upgrade.
             2. Remove the bookmark.
 
         :expectedresults: Public disabled bookmarks details for all the system entities
-        should be unchanged after upgrade.
+            should be unchanged after upgrade.
 
         :CaseImportance: Critical
         """
         pre_test_name = dependent_scenario_name
-        for entity in BOOKMARK_ENTITIES:
+        for entity in BOOKMARK_ENTITIES_SELECTION:
             book_mark_name = entity["name"] + pre_test_name
-            bm = entities.Bookmark().search(query={'search': f'name="{book_mark_name}"'})[0]
+            bm = target_sat.api.Bookmark().search(query={'search': f'name="{book_mark_name}"'})[0]
             assert bm.controller == entity['controller']
             assert bm.name == book_mark_name
             assert bm.query == f"name={book_mark_name}"
@@ -100,14 +94,13 @@ class TestPublicEnableBookmark:
     """
 
     @pytest.mark.pre_upgrade
-    def test_pre_create_public_enable_bookmark(self, request):
+    def test_pre_create_public_enable_bookmark(self, request, target_sat):
         """Create public enable bookmark for system entities using available bookmark
         data.
 
         :id: preupgrade-93c419db-66b4-4c9a-a82a-a6a68703881f
 
-        :Steps:
-
+        :steps:
             1. Create public enable bookmarks before the upgrade for all system entities
             using available bookmark data.
             2. Check the bookmark attribute(controller, name, query public) status
@@ -122,9 +115,9 @@ class TestPublicEnableBookmark:
         :customerscenario: true
         """
 
-        for entity in BOOKMARK_ENTITIES:
+        for entity in BOOKMARK_ENTITIES_SELECTION:
             book_mark_name = entity["name"] + request.node.name
-            bm = entities.Bookmark(
+            bm = target_sat.api.Bookmark(
                 controller=entity['controller'],
                 name=book_mark_name,
                 public=True,
@@ -136,26 +129,25 @@ class TestPublicEnableBookmark:
             assert bm.public
 
     @pytest.mark.post_upgrade(depend_on=test_pre_create_public_enable_bookmark)
-    def test_post_create_public_enable_bookmark(self, dependent_scenario_name):
+    def test_post_create_public_enable_bookmark(self, dependent_scenario_name, target_sat):
         """Check the status of public enabled bookmark for all the
         system entities(activation keys, tasks, compute profile, content hosts etc) after upgrade.
 
         :id: postupgrade-93c419db-66b4-4c9a-a82a-a6a68703881f
 
-        :Steps:
-
+        :steps:
             1. Check the bookmark status after post-upgrade.
             2. Remove the bookmark.
 
         :expectedresults: Public disabled bookmarks details for all the system entities
-        should be unchanged after upgrade.
+            should be unchanged after upgrade.
 
         :CaseImportance: Critical
         """
         pre_test_name = dependent_scenario_name
-        for entity in BOOKMARK_ENTITIES:
+        for entity in BOOKMARK_ENTITIES_SELECTION:
             book_mark_name = entity["name"] + pre_test_name
-            bm = entities.Bookmark().search(query={'search': f'name="{book_mark_name}"'})[0]
+            bm = target_sat.api.Bookmark().search(query={'search': f'name="{book_mark_name}"'})[0]
             assert bm.controller == entity['controller']
             assert bm.name == book_mark_name
             assert bm.query == f"name={book_mark_name}"

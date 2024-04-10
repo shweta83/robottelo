@@ -4,26 +4,20 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Puppet
 
-:Assignee: vsedmik
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
-from random import choice
-from random import uniform
+from random import choice, uniform
 
 import pytest
 import yaml
 
 from robottelo.constants import ENVIRONMENT
-from robottelo.datafactory import gen_string
+from robottelo.utils.datafactory import gen_string
 
 PM_NAME = 'generic_1'
 
@@ -80,8 +74,6 @@ def test_positive_end_to_end(session_puppet_enabled_sat, module_puppet_classes, 
     :id: 05ccb04e-5d21-44cc-a01c-807469be06c0
 
     :expectedresults: All expected basic actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """
@@ -201,8 +193,6 @@ def test_positive_create_matcher_attribute_priority(
         8.  Resubmit the same form to check bz-1241249
 
     :expectedresults: The YAML output has the value only for fqdn matcher.
-
-    :CaseLevel: Integration
 
     :BZ: 1241249
 
@@ -381,8 +371,6 @@ def test_positive_update_matcher_from_attribute(
         1.  The host/hostgroup is saved with changes.
         2.  Matcher value in parameter is updated from fqdn/hostgroup.
 
-    :CaseLevel: Integration
-
     :CaseImportance: Critical
     """
     sc_param = sc_params_list.pop()
@@ -449,8 +437,6 @@ def test_positive_impact_parameter_delete_attribute(
         1.  The matcher for deleted attribute removed from parameter.
         2.  On recreating attribute, the matcher should not reappear
             in parameter.
-
-    :CaseLevel: Integration
     """
     sc_param = sc_params_list.pop()
     matcher_value = gen_string('alpha')
@@ -522,8 +508,6 @@ def test_positive_hidden_value_in_attribute(
         3.  In parameter, new matcher created for fqdn/hostgroup.
         4.  And the value shown hidden.
         5.  Parameter is successfully unhidden.
-
-    :CaseLevel: Integration
 
     :CaseImportance: Critical
     """

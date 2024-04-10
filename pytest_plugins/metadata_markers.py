@@ -6,7 +6,6 @@ import pytest
 
 from robottelo.config import settings
 from robottelo.hosts import get_sat_rhel_version
-from robottelo.hosts import get_sat_version
 from robottelo.logging import collection_logger as logger
 
 FMT_XUNIT_TIME = '%Y-%m-%dT%H:%M:%S'
@@ -24,8 +23,8 @@ def pytest_addoption(parser):
         help='Comma separated list of component names to include in test collection',
     )
     parser.addoption(
-        '--assignee',
-        help='Comma separated list of assignees to include in test collection',
+        '--team',
+        help='Comma separated list of teams to include in test collection',
     )
 
 
@@ -34,7 +33,7 @@ def pytest_configure(config):
     for marker in [
         'importance: CaseImportance testimony token, use --importance to filter',
         'component: Component testimony token, use --component to filter',
-        'assignee: Assignee testimony token, use --assignee to filter',
+        'team: Team testimony token, use --team to filter',
     ]:
         config.addinivalue_line("markers", marker)
 
@@ -51,15 +50,15 @@ importance_regex = re.compile(
     re.IGNORECASE,
 )
 
-assignee_regex = re.compile(
-    # To match :Assignee: jsmith
-    r'\s*:Assignee:\s*(?P<assignee>\S*)',
+team_regex = re.compile(
+    # To match :Team: Rocket
+    r'\s*:Team:\s*(?P<team>\S*)',
     re.IGNORECASE,
 )
 
 
 @pytest.hookimpl(tryfirst=True)
-def pytest_collection_modifyitems(session, items, config):
+def pytest_collection_modifyitems(items, config):
     """Add markers and user_properties for testimony token metadata
 
     user_properties is used by the junit plugin, and thus by many test report systems
@@ -74,24 +73,27 @@ def pytest_collection_modifyitems(session, items, config):
     """
     # get RHEL version of the satellite
     rhel_version = get_sat_rhel_version().base_version
-    sat_version = get_sat_version().base_version
+    sat_version = settings.server.version.get('release')
     snap_version = settings.server.version.get('snap', '')
 
     # split the option string and handle no option, single option, multiple
     # config.getoption(default) doesn't work like you think it does, hence or ''
     importance = [i for i in (config.getoption('importance') or '').split(',') if i != '']
     component = [c for c in (config.getoption('component') or '').split(',') if c != '']
-    assignee = [a for a in (config.getoption('assignee') or '').split(',') if a != '']
+    team = [a.lower() for a in (config.getoption('team') or '').split(',') if a != '']
 
     selected = []
     deselected = []
     logger.info('Processing test items to add testimony token markers')
     for item in items:
+        item.user_properties.append(
+            ("start_time", datetime.datetime.utcnow().strftime(FMT_XUNIT_TIME))
+        )
         if item.nodeid.startswith('tests/robottelo/') and 'test_junit' not in item.nodeid:
             # Unit test, no testimony markers
             continue
 
-        # apply the marks for importance, component, and assignee
+        # apply the marks for importance, component, and team
         # Find matches from docstrings starting at smallest scope
         item_docstrings = [
             d
@@ -108,26 +110,36 @@ def pytest_collection_modifyitems(session, items, config):
             doc_importance = importance_regex.findall(docstring)
             if doc_importance and 'importance' not in item_mark_names:
                 item.add_marker(pytest.mark.importance(doc_importance[0]))
-            doc_assignee = assignee_regex.findall(docstring)
-            if doc_assignee and 'assignee' not in item_mark_names:
-                item.add_marker(pytest.mark.assignee(doc_assignee[0]))
+            doc_team = team_regex.findall(docstring)
+            if doc_team and 'team' not in item_mark_names:
+                item.add_marker(pytest.mark.team(doc_team[0].lower()))
 
         # add markers as user_properties so they are recorded in XML properties of the report
         # pytest-ibutsu will include user_properties dict in testresult metadata
+        markers_prop_data = []
+        exclude_markers = ['parametrize', 'skipif', 'usefixtures', 'skip_if_not_set']
         for marker in item.iter_markers():
-            item.user_properties.append((marker.name, next(iter(marker.args), None)))
+            proprty = marker.name
+            if proprty in exclude_markers:
+                continue
+            if marker_val := next(iter(marker.args), None):
+                proprty = '='.join([proprty, str(marker_val)])
+            markers_prop_data.append(proprty)
+            # Adding independent marker as a property
+            item.user_properties.append((marker.name, marker_val))
+        # Adding all markers as a single property
+        item.user_properties.append(("markers", ", ".join(markers_prop_data)))
+
+        # Version specific user properties
         item.user_properties.append(("BaseOS", rhel_version))
         item.user_properties.append(("SatelliteVersion", sat_version))
         item.user_properties.append(("SnapVersion", snap_version))
-        item.user_properties.append(
-            ("start_time", datetime.datetime.utcnow().strftime(FMT_XUNIT_TIME))
-        )
 
         # exit early if no filters were passed
-        if importance or component or assignee:
+        if importance or component or team:
             # Filter test collection based on CLI options for filtering
             # filters should be applied together
-            # such that --component Repository --importance Critical --assignee jsmith
+            # such that --component Repository --importance Critical --team rocket
             # only collects tests which have all three of these marks
 
             # https://github.com/pytest-dev/pytest/issues/1373  Will make this way easier
@@ -148,11 +160,11 @@ def pytest_collection_modifyitems(session, items, config):
                 )
                 deselected.append(item)
                 continue
-            assignee_marker = item.get_closest_marker('assignee').args[0]
-            if assignee and assignee_marker not in assignee:
+            team_marker = item.get_closest_marker('team').args[0]
+            if team and team_marker not in team:
                 logger.debug(
-                    f'Deselected test {item.nodeid} due to "--assignee {assignee}",'
-                    f'test has assignee mark: {assignee_marker}'
+                    f'Deselected test {item.nodeid} due to "--team {team}",'
+                    f'test has team mark: {team_marker}'
                 )
                 deselected.append(item)
                 continue

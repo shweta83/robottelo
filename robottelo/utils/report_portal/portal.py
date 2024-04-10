@@ -1,7 +1,5 @@
 import requests
-from tenacity import retry
-from tenacity import stop_after_attempt
-from tenacity import wait_fixed
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from robottelo.config import settings
 from robottelo.logging import logger
@@ -103,10 +101,9 @@ class ReportPortal:
         resp.raise_for_status()
         # this should further filter out unfinished launches as RP API currently doesn't
         # support usage of the same filter type multiple times (filter.ne.status)
-        launches = [
+        return [
             launch for launch in resp.json()['content'] if launch['status'] not in ['INTERRUPTED']
         ]
-        return launches
 
     @retry(
         stop=stop_after_attempt(6),
@@ -140,9 +137,9 @@ class ReportPortal:
             params['filter.in.issueType'] = ','.join(
                 [ReportPortal.defect_types[t] for t in test_args['defect_types']]
             )
-        if test_args.get('user'):
-            params['filter.has.attributeKey'] = 'assignee'
-            params['filter.has.attributeValue'] = test_args['user']
+        if test_args.get('team'):
+            params['filter.has.attributeKey'] = 'team'
+            params['filter.has.attributeValue'] = test_args['team']
 
         # send HTTP request to RP API, retrieve the paginated results and join them together
         page = 1

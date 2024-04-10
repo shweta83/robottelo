@@ -9,32 +9,28 @@ http://theforeman.org/api/apidoc/v2/1.15.html
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Networking
 
-:Assignee: rdrazny
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import re
 
 import pytest
-from nailgun import entities
 from requests.exceptions import HTTPError
 
-from robottelo.datafactory import gen_string
-from robottelo.datafactory import generate_strings_list
-from robottelo.datafactory import invalid_values_list
-from robottelo.datafactory import parametrized
+from robottelo.utils.datafactory import (
+    gen_string,
+    generate_strings_list,
+    invalid_values_list,
+    parametrized,
+)
 
 
 @pytest.mark.tier1
-def test_positive_create_with_parameter():
+def test_positive_create_with_parameter(target_sat):
     """Subnet can be created along with parameters
 
     :id: ec581cb5-8c48-4b9c-b536-302c0b7ec30f
@@ -45,14 +41,14 @@ def test_positive_create_with_parameter():
     :expectedresults: The Subnet is created with parameter
     """
     parameter = [{'name': gen_string('alpha'), 'value': gen_string('alpha')}]
-    subnet = entities.Subnet(subnet_parameters_attributes=parameter).create()
+    subnet = target_sat.api.Subnet(subnet_parameters_attributes=parameter).create()
     assert subnet.subnet_parameters_attributes[0]['name'] == parameter[0]['name']
     assert subnet.subnet_parameters_attributes[0]['value'] == parameter[0]['value']
 
 
 @pytest.mark.tier1
 @pytest.mark.parametrize('name', **parametrized(generate_strings_list()))
-def test_positive_add_parameter(name):
+def test_positive_add_parameter(name, target_sat):
     """Parameters can be created in subnet
 
     :id: c1dae6f4-45b1-45db-8529-d7918e41a99b
@@ -68,15 +64,15 @@ def test_positive_add_parameter(name):
 
     :CaseImportance: Medium
     """
-    subnet = entities.Subnet().create()
+    subnet = target_sat.api.Subnet().create()
     value = gen_string('utf8')
-    subnet_param = entities.Parameter(subnet=subnet.id, name=name, value=value).create()
+    subnet_param = target_sat.api.Parameter(subnet=subnet.id, name=name, value=value).create()
     assert subnet_param.name == name
     assert subnet_param.value == value
 
 
 @pytest.mark.tier1
-def test_positive_add_parameter_with_values_and_separator():
+def test_positive_add_parameter_with_values_and_separator(target_sat):
     """Subnet parameters can be created with values separated by comma
 
     :id: b3de6f96-7c39-4c44-b91c-a6d141f5dd6a
@@ -92,10 +88,10 @@ def test_positive_add_parameter_with_values_and_separator():
 
     :CaseImportance: Low
     """
-    subnet = entities.Subnet().create()
+    subnet = target_sat.api.Subnet().create()
     name = gen_string('alpha')
     values = ', '.join(generate_strings_list())
-    subnet_param = entities.Parameter(name=name, subnet=subnet.id, value=values).create()
+    subnet_param = target_sat.api.Parameter(name=name, subnet=subnet.id, value=values).create()
     assert subnet_param.name == name
     assert subnet_param.value == values
 
@@ -104,7 +100,7 @@ def test_positive_add_parameter_with_values_and_separator():
 @pytest.mark.parametrize(
     'separator', **parametrized({'comma': ',', 'slash': '/', 'dash': '-', 'pipe': '|'})
 )
-def test_positive_create_with_parameter_and_valid_separator(separator):
+def test_positive_create_with_parameter_and_valid_separator(separator, target_sat):
     """Subnet parameters can be created with name with valid separators
 
     :id: d1e2d75a-a1e8-4767-93f1-0bb1b75e10a0
@@ -122,16 +118,16 @@ def test_positive_create_with_parameter_and_valid_separator(separator):
     :CaseImportance: Low
     """
     name = f'{separator}'.join(generate_strings_list())
-    subnet = entities.Subnet().create()
+    subnet = target_sat.api.Subnet().create()
     value = gen_string('utf8')
-    subnet_param = entities.Parameter(name=name, subnet=subnet.id, value=value).create()
+    subnet_param = target_sat.api.Parameter(name=name, subnet=subnet.id, value=value).create()
     assert subnet_param.name == name
     assert subnet_param.value == value
 
 
 @pytest.mark.tier1
 @pytest.mark.parametrize('name', **parametrized(invalid_values_list() + ['name with space']))
-def test_negative_create_with_parameter_and_invalid_separator(name):
+def test_negative_create_with_parameter_and_invalid_separator(name, target_sat):
     """Subnet parameters can not be created with name with invalid
     separators
 
@@ -153,13 +149,13 @@ def test_negative_create_with_parameter_and_invalid_separator(name):
 
     :CaseImportance: Low
     """
-    subnet = entities.Subnet().create()
+    subnet = target_sat.api.Subnet().create()
     with pytest.raises(HTTPError):
-        entities.Parameter(name=name, subnet=subnet.id).create()
+        target_sat.api.Parameter(name=name, subnet=subnet.id).create()
 
 
 @pytest.mark.tier1
-def test_negative_create_with_duplicated_parameters():
+def test_negative_create_with_duplicated_parameters(target_sat):
     """Attempt to create multiple parameters with same key name for the
     same subnet
 
@@ -178,10 +174,10 @@ def test_negative_create_with_duplicated_parameters():
 
     :CaseImportance: Low
     """
-    subnet = entities.Subnet().create()
-    entities.Parameter(name='duplicateParameter', subnet=subnet.id).create()
+    subnet = target_sat.api.Subnet().create()
+    target_sat.api.Parameter(name='duplicateParameter', subnet=subnet.id).create()
     with pytest.raises(HTTPError) as context:
-        entities.Parameter(name='duplicateParameter', subnet=subnet.id).create()
+        target_sat.api.Parameter(name='duplicateParameter', subnet=subnet.id).create()
     assert re.search("Name has already been taken", context.value.response.text)
 
 
@@ -204,8 +200,6 @@ def test_positive_inherit_subnet_parmeters_in_host():
             host parameters
         2. The parameters from subnet should be displayed in
             host enc output
-
-    :CaseLevel: System
 
     :CaseImportance: Medium
 
@@ -233,8 +227,6 @@ def test_positive_subnet_parameters_override_from_host():
         2. The new value should be assigned to parameter
         3. The parameter and value should be accessible as host parameters
 
-    :CaseLevel: Integration
-
     :CaseImportance: Medium
 
     :BZ: 1470014
@@ -242,7 +234,7 @@ def test_positive_subnet_parameters_override_from_host():
 
 
 @pytest.mark.tier3
-def test_positive_subnet_parameters_override_impact_on_subnet():
+def test_positive_subnet_parameters_override_impact_on_subnet(target_sat):
     """Override subnet parameter from host impact on subnet parameter
 
     :id: 6fe963ed-93a3-496e-bfd9-599bf91a61f3
@@ -257,22 +249,20 @@ def test_positive_subnet_parameters_override_impact_on_subnet():
     :expectedresults: The override value of subnet parameter from host
         should not change actual value in subnet parameter
 
-    :CaseLevel: System
-
     :CaseImportance: Medium
     """
 
     # Create subnet with valid parameters
     parameter = [{'name': gen_string('alpha'), 'value': gen_string('alpha')}]
-    org = entities.Organization().create()
-    loc = entities.Location(organization=[org]).create()
-    org_subnet = entities.Subnet(
+    org = target_sat.api.Organization().create()
+    loc = target_sat.api.Location(organization=[org]).create()
+    org_subnet = target_sat.api.Subnet(
         location=[loc], organization=[org], subnet_parameters_attributes=parameter
     ).create()
     assert org_subnet.subnet_parameters_attributes[0]['name'] == parameter[0]['name']
     assert org_subnet.subnet_parameters_attributes[0]['value'] == parameter[0]['value']
     # Create host with above subnet
-    host = entities.Host(location=loc, organization=org, subnet=org_subnet).create()
+    host = target_sat.api.Host(location=loc, organization=org, subnet=org_subnet).create()
     assert host.subnet.read().name == org_subnet.name
     parameter_new_value = [
         {
@@ -291,7 +281,7 @@ def test_positive_subnet_parameters_override_impact_on_subnet():
 
 
 @pytest.mark.tier1
-def test_positive_update_parameter():
+def test_positive_update_parameter(target_sat):
     """Subnet parameter can be updated
 
     :id: 8c389c3f-60ef-4856-b8fc-c5b066c67a2f
@@ -307,7 +297,7 @@ def test_positive_update_parameter():
     :CaseImportance: Medium
     """
     parameter = [{'name': gen_string('alpha'), 'value': gen_string('alpha')}]
-    subnet = entities.Subnet(subnet_parameters_attributes=parameter).create()
+    subnet = target_sat.api.Subnet(subnet_parameters_attributes=parameter).create()
     update_parameter = [{'name': gen_string('utf8'), 'value': gen_string('utf8')}]
     subnet.subnet_parameters_attributes = update_parameter
     up_subnet = subnet.update(['subnet_parameters_attributes'])
@@ -317,7 +307,7 @@ def test_positive_update_parameter():
 
 @pytest.mark.tier1
 @pytest.mark.parametrize('new_name', **parametrized(invalid_values_list() + ['name with space']))
-def test_negative_update_parameter(new_name):
+def test_negative_update_parameter(new_name, target_sat):
     """Subnet parameter can not be updated with invalid names
 
     :id: fcdbad13-ad96-4152-8e20-e023d61a2853
@@ -337,18 +327,17 @@ def test_negative_update_parameter(new_name):
 
     :CaseImportance: Medium
     """
-    subnet = entities.Subnet().create()
-    sub_param = entities.Parameter(
+    subnet = target_sat.api.Subnet().create()
+    sub_param = target_sat.api.Parameter(
         name=gen_string('utf8'), subnet=subnet.id, value=gen_string('utf8')
     ).create()
+    sub_param.name = new_name
     with pytest.raises(HTTPError):
-        sub_param.name = new_name
         sub_param.update(['name'])
 
 
-@pytest.mark.stubbed
 @pytest.mark.tier2
-def test_positive_update_subnet_parameter_host_impact():
+def test_positive_update_subnet_parameter_host_impact(target_sat):
     """Update in parameter name and value from subnet component updates
     the parameter in host inheriting that subnet
 
@@ -363,19 +352,34 @@ def test_positive_update_subnet_parameter_host_impact():
     :expectedresults:
 
         1. The inherited subnet parameter in host should have
-            updated name and value
-        2. The inherited subnet parameter in host enc should have
-            updated name and value
-
-    :CaseLevel: Integration
+            updated name and value.
 
     :BZ: 1470014
     """
+    parameter = [{'name': gen_string('alpha'), 'value': gen_string('alpha')}]
+    org = target_sat.api.Organization().create()
+    loc = target_sat.api.Location(organization=[org]).create()
+    org_subnet = target_sat.api.Subnet(
+        location=[loc], organization=[org], subnet_parameters_attributes=parameter
+    ).create()
+    assert parameter[0]['name'] == org_subnet.subnet_parameters_attributes[0]['name']
+    assert parameter[0]['value'] == org_subnet.subnet_parameters_attributes[0]['value']
+    host = target_sat.api.Host(location=loc, organization=org, subnet=org_subnet).create()
+    parameter_new_value = [{'name': gen_string('alpha'), 'value': gen_string('alpha')}]
+    org_subnet.subnet_parameters_attributes = parameter_new_value
+    org_subnet.update(['subnet_parameters_attributes'])
+    assert (
+        host.subnet.read().subnet_parameters_attributes[0]['name'] == parameter_new_value[0]['name']
+    )
+    assert (
+        host.subnet.read().subnet_parameters_attributes[0]['value']
+        == parameter_new_value[0]['value']
+    )
 
 
 @pytest.mark.tier1
 @pytest.mark.upgrade
-def test_positive_delete_subnet_parameter():
+def test_positive_delete_subnet_parameter(target_sat):
     """Subnet parameter can be deleted
 
     :id: 972b66ec-d506-4fcb-9786-c62f2f79ac1a
@@ -387,8 +391,8 @@ def test_positive_delete_subnet_parameter():
 
     :expectedresults: The parameter should be deleted from subnet
     """
-    subnet = entities.Subnet().create()
-    sub_param = entities.Parameter(subnet=subnet.id).create()
+    subnet = target_sat.api.Subnet().create()
+    sub_param = target_sat.api.Parameter(subnet=subnet.id).create()
     sub_param.delete()
     with pytest.raises(HTTPError):
         sub_param.read()
@@ -413,8 +417,6 @@ def test_positive_delete_subnet_parameter_host_impact():
 
         1. The parameter should be deleted from host
         2. The parameter should be deleted from host enc
-
-    :CaseLevel: Integration
 
     :BZ: 1470014
     """
@@ -443,14 +445,12 @@ def test_positive_delete_subnet_overridden_parameter_host_impact():
             host parameter now
         2. The parameter should not be deleted from host enc as well
 
-    :CaseLevel: Integration
-
     :BZ: 1470014
     """
 
 
 @pytest.mark.tier1
-def test_positive_list_parameters():
+def test_positive_list_parameters(target_sat):
     """Satellite lists all the subnet parameters
 
     :id: ce86d531-bf6b-45a9-81e3-67e1b3398f76
@@ -465,9 +465,9 @@ def test_positive_list_parameters():
         parameters
     """
     parameter = {'name': gen_string('alpha'), 'value': gen_string('alpha')}
-    org = entities.Organization().create()
-    loc = entities.Location(organization=[org]).create()
-    org_subnet = entities.Subnet(
+    org = target_sat.api.Organization().create()
+    loc = target_sat.api.Location(organization=[org]).create()
+    org_subnet = target_sat.api.Subnet(
         location=[loc],
         organization=[org],
         ipam='DHCP',
@@ -476,10 +476,10 @@ def test_positive_list_parameters():
     ).create()
     assert org_subnet.subnet_parameters_attributes[0]['name'] == parameter['name']
     assert org_subnet.subnet_parameters_attributes[0]['value'] == parameter['value']
-    sub_param = entities.Parameter(
+    sub_param = target_sat.api.Parameter(
         name=gen_string('alpha'), subnet=org_subnet.id, value=gen_string('alpha')
     ).create()
-    org_subnet = entities.Subnet(id=org_subnet.id).read()
+    org_subnet = target_sat.api.Subnet(id=org_subnet.id).read()
     params_list = {
         param['name']: param['value']
         for param in org_subnet.subnet_parameters_attributes
@@ -511,8 +511,6 @@ def test_positive_subnet_parameter_priority():
         2. Host enc should display the parameter with value inherited from
             higher priority component(HostGroup in this case)
 
-    :CaseLevel: System
-
     :CaseImportance: Low
 
     :BZ: 1470014
@@ -541,8 +539,6 @@ def test_negative_component_overrides_subnet_parameter():
             lower priority component(domain in this case)
         2. Host enc should not display the parameter with value inherited
             from lower priority component(domain in this case)
-
-    :CaseLevel: System
 
     :CaseImportance: Low
 

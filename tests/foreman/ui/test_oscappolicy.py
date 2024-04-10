@@ -4,31 +4,28 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: SCAPPlugin
 
-:Assignee: jpathan
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
-from nailgun import entities
 
-from robottelo.api.utils import promote
 from robottelo.constants import OSCAP_PROFILE
-from robottelo.datafactory import gen_string
+from robottelo.utils.datafactory import gen_string
 
 
 @pytest.fixture(scope='module')
-def module_host_group(default_location, default_org):
-    return entities.HostGroup(location=[default_location], organization=[default_org]).create()
+def module_host_group(default_location, default_org, module_target_sat):
+    return module_target_sat.api.HostGroup(
+        location=[default_location], organization=[default_org]
+    ).create()
 
 
+@pytest.mark.skip_if_open("BZ:2167937")
+@pytest.mark.skip_if_open("BZ:2133151")
 @pytest.mark.tier2
 def test_positive_check_dashboard(
     session,
@@ -37,6 +34,7 @@ def test_positive_check_dashboard(
     default_org,
     oscap_content_path,
     import_ansible_roles,
+    module_target_sat,
 ):
     """Create OpenScap Policy which is connected to the host. That policy
     dashboard should be rendered and correctly display information about
@@ -46,7 +44,7 @@ def test_positive_check_dashboard(
 
     :customerscenario: true
 
-    :Steps:
+    :steps:
 
         1. Create new host group
         2. Create new host using host group from step 1
@@ -57,17 +55,15 @@ def test_positive_check_dashboard(
         data
 
     :BZ: 1424936
-
-    :CaseLevel: Integration
     """
     name = gen_string('alpha')
     oscap_content_title = gen_string('alpha')
-    lce = entities.LifecycleEnvironment(organization=default_org).create()
-    content_view = entities.ContentView(organization=default_org).create()
+    lce = module_target_sat.api.LifecycleEnvironment(organization=default_org).create()
+    content_view = module_target_sat.api.ContentView(organization=default_org).create()
     content_view.publish()
     content_view = content_view.read()
-    promote(content_view.version[0], environment_id=lce.id)
-    entities.Host(
+    content_view.version[0].promote(data={'environment_ids': lce.id})
+    module_target_sat.api.Host(
         hostgroup=module_host_group,
         location=default_location,
         organization=default_org,
@@ -76,7 +72,7 @@ def test_positive_check_dashboard(
             'lifecycle_environment_id': lce.id,
         },
     ).create()
-    entities.ScapContents(
+    module_target_sat.api.ScapContents(
         title=oscap_content_title,
         scap_file=oscap_content_path,
         organization=[default_org],
@@ -104,6 +100,8 @@ def test_positive_check_dashboard(
         # assert policy_details['HostBreakdownChart']['hosts_breakdown'] == '100%Not audited'
 
 
+@pytest.mark.skip_if_open("BZ:2167937")
+@pytest.mark.skip_if_open("BZ:2133151")
 @pytest.mark.tier1
 @pytest.mark.upgrade
 def test_positive_end_to_end(
@@ -114,14 +112,13 @@ def test_positive_end_to_end(
     oscap_content_path,
     tailoring_file_path,
     import_ansible_roles,
+    module_target_sat,
 ):
     """Perform end to end testing for oscap policy component
 
     :id: 39c26f89-3147-4f27-bf5e-810f0ba721d8
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: Critical
     """
@@ -133,14 +130,14 @@ def test_positive_end_to_end(
     profile_type = OSCAP_PROFILE['security7']
     tailoring_type = OSCAP_PROFILE['tailoring_rhel7']
     # Upload oscap content file
-    entities.ScapContents(
+    module_target_sat.api.ScapContents(
         title=oscap_content_title,
         scap_file=oscap_content_path,
         organization=[default_org],
         location=[default_location],
     ).create()
     # Upload tailoring file
-    entities.TailoringFile(
+    module_target_sat.api.TailoringFile(
         name=tailoring_name,
         scap_file=tailoring_file_path['local'],
         organization=[default_org],

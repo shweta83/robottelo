@@ -1,25 +1,41 @@
 import copy
 import socket
 
-import pytest
 from box import Box
 from nailgun import entities
+import pytest
 
-from robottelo.api.utils import update_rhsso_settings_in_satellite
-from robottelo.cli.base import CLIReturnCodeError
 from robottelo.config import settings
-from robottelo.constants import AUDIENCE_MAPPER
-from robottelo.constants import GROUP_MEMBERSHIP_MAPPER
-from robottelo.constants import LDAP_ATTR
-from robottelo.constants import LDAP_SERVER_TYPE
-from robottelo.datafactory import gen_string
-from robottelo.hosts import ContentHost
-from robottelo.rhsso_utils import create_mapper
-from robottelo.rhsso_utils import get_rhsso_client_id
-from robottelo.rhsso_utils import set_the_redirect_uri
+from robottelo.constants import (
+    AUDIENCE_MAPPER,
+    CERT_PATH,
+    GROUP_MEMBERSHIP_MAPPER,
+    HAMMER_CONFIG,
+    HAMMER_SESSIONS,
+    LDAP_ATTR,
+    LDAP_SERVER_TYPE,
+)
+from robottelo.hosts import IPAHost, SSOHost
+from robottelo.utils.datafactory import gen_string
+from robottelo.utils.installer import InstallerCommand
+from robottelo.utils.issue_handlers import is_open
+
+LOGGEDOUT = 'Logged out.'
 
 
-@pytest.fixture()
+@pytest.fixture(scope='module')
+def default_sso_host(module_target_sat):
+    """Returns default sso host"""
+    return SSOHost(module_target_sat)
+
+
+@pytest.fixture(scope='module')
+def default_ipa_host(module_target_sat):
+    """Returns default IPA host"""
+    return IPAHost(module_target_sat)
+
+
+@pytest.fixture
 def ldap_cleanup():
     """this is an extra step taken to clean any existing ldap source"""
     ldap_auth_sources = entities.AuthSourceLDAP().search()
@@ -28,14 +44,14 @@ def ldap_cleanup():
         for user in users:
             user.delete()
         ldap_auth.delete()
-    yield
+    return
 
 
 @pytest.fixture(scope='session')
 def ad_data():
     supported_server_versions = ['2016', '2019']
 
-    def _ad_data(version='2016'):
+    def _ad_data(version='2019'):
         if version in supported_server_versions:
             ad_server_details = {
                 'ldap_user_name': settings.ldap.username,
@@ -88,7 +104,7 @@ def open_ldap_data():
     }
 
 
-@pytest.fixture(scope='function')
+@pytest.fixture
 def auth_source(ldap_cleanup, module_org, module_location, ad_data):
     ad_data = ad_data()
     return entities.AuthSourceLDAP(
@@ -111,21 +127,21 @@ def auth_source(ldap_cleanup, module_org, module_location, ad_data):
     ).create()
 
 
-@pytest.fixture(scope='function')
-def auth_source_ipa(ldap_cleanup, module_org, module_location, ipa_data):
+@pytest.fixture
+def auth_source_ipa(ldap_cleanup, default_ipa_host, module_org, module_location):
     return entities.AuthSourceLDAP(
         onthefly_register=True,
-        account=ipa_data['ldap_user_cn'],
-        account_password=ipa_data['ldap_user_passwd'],
-        base_dn=ipa_data['base_dn'],
-        groups_base=ipa_data['group_base_dn'],
+        account=default_ipa_host.ldap_user_cn,
+        account_password=default_ipa_host.ldap_user_passwd,
+        base_dn=default_ipa_host.base_dn,
+        groups_base=default_ipa_host.group_base_dn,
         attr_firstname=LDAP_ATTR['firstname'],
         attr_lastname=LDAP_ATTR['surname'],
         attr_login=LDAP_ATTR['login'],
         server_type=LDAP_SERVER_TYPE['API']['ipa'],
         attr_mail=LDAP_ATTR['mail'],
         name=gen_string('alpha'),
-        host=ipa_data['ldap_hostname'],
+        host=default_ipa_host.hostname,
         tls=False,
         port='389',
         organization=[module_org],
@@ -133,7 +149,7 @@ def auth_source_ipa(ldap_cleanup, module_org, module_location, ipa_data):
     ).create()
 
 
-@pytest.fixture(scope='function')
+@pytest.fixture
 def auth_source_open_ldap(ldap_cleanup, module_org, module_location, open_ldap_data):
     return entities.AuthSourceLDAP(
         onthefly_register=True,
@@ -168,11 +184,11 @@ def ldap_auth_source(
 ):
     auth_type = request.param.lower()
     if 'ad' in auth_type:
-        ad_data = ad_data('2019') if '2019' in auth_type else ad_data()
+        ad_data = ad_data()
         # entity create with AD settings
         auth_source = module_target_sat.api.AuthSourceLDAP(
             onthefly_register=True,
-            account=ad_data['ldap_user_name'],
+            account=f"cn={ad_data['ldap_user_name']},{ad_data['base_dn']}",
             account_password=ad_data['ldap_user_passwd'],
             base_dn=ad_data['base_dn'],
             groups_base=ad_data['group_base_dn'],
@@ -243,23 +259,24 @@ def ldap_auth_source(
     else:
         ldap_data['server_type'] = LDAP_SERVER_TYPE['UI']['posix']
         ldap_data['attr_login'] = LDAP_ATTR['login']
-    yield ldap_data, auth_source
+    return ldap_data, auth_source
 
 
 @pytest.fixture
 def auth_data(request, ad_data, ipa_data):
     auth_type = request.param.lower()
     if 'ad' in auth_type:
-        ad_data = ad_data('2019') if '2019' in auth_type else ad_data()
+        ad_data = ad_data()
         ad_data['server_type'] = LDAP_SERVER_TYPE['UI']['ad']
         ad_data['attr_login'] = LDAP_ATTR['login_ad']
         ad_data['auth_type'] = auth_type
         return ad_data
-    elif auth_type == 'ipa':
+    if auth_type == 'ipa':
         ipa_data['server_type'] = LDAP_SERVER_TYPE['UI']['ipa']
         ipa_data['attr_login'] = LDAP_ATTR['login']
         ipa_data['auth_type'] = auth_type
         return ipa_data
+    return None
 
 
 @pytest.fixture(scope='module')
@@ -269,14 +286,31 @@ def enroll_configure_rhsso_external_auth(module_target_sat):
         'yum -y --disableplugin=foreman-protector install '
         'mod_auth_openidc keycloak-httpd-client-install'
     )
+    # if target directory not given it is installing in /usr/local/lib64
+    module_target_sat.execute('python3 -m pip install lxml -t /usr/lib64/python3.6/site-packages')
     module_target_sat.execute(
-        f'echo {settings.rhsso.rhsso_password} | keycloak-httpd-client-install --app-name foreman-openidc \
+        f'openssl s_client -connect {settings.rhsso.host_name} -showcerts </dev/null 2>/dev/null| '
+        f'sed "/BEGIN CERTIFICATE/,/END CERTIFICATE/!d" > {CERT_PATH}/rh-sso.crt'
+    )
+    module_target_sat.execute(
+        f'sshpass -p "{settings.rhsso.rhsso_password}" scp -o "StrictHostKeyChecking no" '
+        f'root@{settings.rhsso.host_name}:/root/ca_certs/*.crt {CERT_PATH}'
+    )
+    module_target_sat.execute('update-ca-trust')
+    module_target_sat.execute(
+        f'echo {settings.rhsso.rhsso_password} | keycloak-httpd-client-install \
+                --app-name foreman-openidc \
                 --keycloak-server-url {settings.rhsso.host_url} \
                 --keycloak-admin-username "admin" \
                 --keycloak-realm "{settings.rhsso.realm}" \
                 --keycloak-admin-realm master \
                 --keycloak-auth-role root-admin -t openidc -l /users/extlogin --force'
     )
+    if is_open('BZ:2113905'):
+        module_target_sat.execute(
+            r"sed -i -e '$aapache::default_mods:\n  - authn_core' "
+            "/etc/foreman-installer/custom-hiera.yaml"
+        )
     module_target_sat.execute(
         f'satellite-installer --foreman-keycloak true '
         f"--foreman-keycloak-app-name 'foreman-openidc' "
@@ -287,87 +321,83 @@ def enroll_configure_rhsso_external_auth(module_target_sat):
 
 
 @pytest.fixture(scope='module')
-def enable_external_auth_rhsso(enroll_configure_rhsso_external_auth, module_target_sat):
+def enable_external_auth_rhsso(
+    enroll_configure_rhsso_external_auth, default_sso_host, module_target_sat
+):
     """register the satellite with RH-SSO Server for single sign-on"""
-    client_id = get_rhsso_client_id(module_target_sat)
-    create_mapper(GROUP_MEMBERSHIP_MAPPER, client_id)
+    client_id = default_sso_host.get_rhsso_client_id()
+    default_sso_host.create_mapper(GROUP_MEMBERSHIP_MAPPER, client_id)
     audience_mapper = copy.deepcopy(AUDIENCE_MAPPER)
     audience_mapper['config']['included.client.audience'] = audience_mapper['config'][
         'included.client.audience'
-    ].format(rhsso_host=module_target_sat)
-    create_mapper(audience_mapper, client_id)
-    set_the_redirect_uri()
+    ].format(rhsso_host=module_target_sat.hostname)
+    default_sso_host.create_mapper(audience_mapper, client_id)
+    default_sso_host.set_the_redirect_uri()
 
 
-def enroll_idm_and_configure_external_auth(sat):
-    """Enroll the Satellite6 Server to an IDM Server."""
-    ipa_host = ContentHost(settings.ipa.hostname)
-    result = sat.execute(
-        'yum -y --disableplugin=foreman-protector install ipa-client ipa-admintools'
-    )
-    if result.status != 0:
-        raise CLIReturnCodeError(result.status, result.stderr, 'Failed to install ipa client')
-    ipa_host.execute(f'echo {settings.ipa.password} | kinit admin')
-    output = ipa_host.execute(f'ipa host-find {sat.hostname}')
-    if output.status != 0:
-        result = ipa_host.execute(f'ipa host-add --random {sat.hostname}')
-        for line in result.stdout.splitlines():
-            if 'Random password' in line:
-                _, password = line.split(': ', 2)
-                break
-        ipa_host.execute(f'ipa service-add HTTP/{sat.hostname}')
-        _, domain = settings.ipa.hostname.split('.', 1)
-        result = sat.execute(
-            f"ipa-client-install --password '{password}' "
-            f'--domain {domain} '
-            f'--server {settings.ipa.hostname} '
-            f'--realm {domain.upper()} -U'
-        )
-        if result.status not in [0, 3]:
-            raise CLIReturnCodeError(result.status, result.stderr, 'Failed to enable ipa client')
-
-
-@pytest.mark.external_auth
 @pytest.fixture(scope='module')
 def module_enroll_idm_and_configure_external_auth(module_target_sat):
-    enroll_idm_and_configure_external_auth(module_target_sat)
+    ipa_host = IPAHost(module_target_sat)
+    ipa_host.enroll_idm_and_configure_external_auth()
+    yield
+    ipa_host.disenroll_idm()
 
 
-@pytest.mark.external_auth
 @pytest.fixture
 def func_enroll_idm_and_configure_external_auth(target_sat):
-    enroll_idm_and_configure_external_auth(target_sat)
+    ipa_host = IPAHost(target_sat)
+    ipa_host.enroll_idm_and_configure_external_auth()
+    yield
+    ipa_host.disenroll_idm()
 
 
 @pytest.fixture(scope='module')
-def configure_realm(session_target_sat):
+def configure_realm(module_target_sat, default_ipa_host):
     """Configure realm"""
     realm = settings.upgrade.vm_domain.upper()
-    session_target_sat.execute(f'curl -o /root/freeipa.keytab {settings.ipa.keytab_url}')
-    session_target_sat.execute('mv /root/freeipa.keytab /etc/foreman-proxy')
-    session_target_sat.execute(
-        'chown foreman-proxy:foreman-proxy /etc/foreman-proxy/freeipa.keytab'
-    )
-    session_target_sat.execute(
+    module_target_sat.execute(f'curl -o /root/freeipa.keytab {settings.ipa.keytab_url}')
+    module_target_sat.execute('mv /root/freeipa.keytab /etc/foreman-proxy')
+    module_target_sat.execute('chown foreman-proxy:foreman-proxy /etc/foreman-proxy/freeipa.keytab')
+    module_target_sat.execute(
         'satellite-installer --foreman-proxy-realm true '
         f'--foreman-proxy-realm-principal realm-proxy@{realm} '
-        f'--foreman-proxy-dhcp-nameservers {socket.gethostbyname(settings.ipa.hostname)}'
+        f'--foreman-proxy-dhcp-nameservers {socket.gethostbyname(default_ipa_host.hostname)}'
     )
-    session_target_sat.execute('cp /etc/ipa/ca.crt /etc/pki/ca-trust/source/anchors/ipa.crt')
-    session_target_sat.execute('update-ca-trust enable ; update-ca-trust')
-    session_target_sat.execute('service foreman-proxy restart')
+    module_target_sat.execute('cp /etc/ipa/ca.crt /etc/pki/ca-trust/source/anchors/ipa.crt')
+    module_target_sat.execute('update-ca-trust enable ; update-ca-trust')
+    module_target_sat.execute('service foreman-proxy restart')
 
 
 @pytest.fixture(scope="module")
-def rhsso_setting_setup(module_target_sat, request):
+def rhsso_setting_setup(module_target_sat):
     """Update the RHSSO setting and revert it in cleanup"""
-    update_rhsso_settings_in_satellite(sat=module_target_sat)
+    rhhso_settings = {
+        'authorize_login_delegation': True,
+        'authorize_login_delegation_auth_source_user_autocreate': 'External',
+        'login_delegation_logout_url': f'https://{module_target_sat.hostname}/users/extlogout',
+        'oidc_algorithm': 'RS256',
+        'oidc_audience': [f'{module_target_sat.hostname}-foreman-openidc'],
+        'oidc_issuer': f'{settings.rhsso.host_url}/auth/realms/{settings.rhsso.realm}',
+        'oidc_jwks_url': f'{settings.rhsso.host_url}/auth/realms'
+        f'/{settings.rhsso.realm}/protocol/openid-connect/certs',
+    }
+    for setting_name, setting_value in rhhso_settings.items():
+        # replace entietes field with targetsat.api
+        setting_entity = module_target_sat.api.Setting().search(
+            query={'search': f'name={setting_name}'}
+        )[0]
+        setting_entity.value = setting_value
+        setting_entity.update({'value'})
     yield
-    update_rhsso_settings_in_satellite(revert=True, sat=module_target_sat)
+    setting_entity = module_target_sat.api.Setting().search(
+        query={'search': 'name=authorize_login_delegation'}
+    )[0]
+    setting_entity.value = False
+    setting_entity.update({'value'})
 
 
 @pytest.fixture(scope="module")
-def rhsso_setting_setup_with_timeout(module_target_sat, rhsso_setting_setup, request):
+def rhsso_setting_setup_with_timeout(module_target_sat, rhsso_setting_setup):
     """Update the RHSSO setting with timeout setting and revert it in cleanup"""
     setting_entity = module_target_sat.api.Setting().search(query={'search': 'name=idle_timeout'})[
         0
@@ -379,59 +409,96 @@ def rhsso_setting_setup_with_timeout(module_target_sat, rhsso_setting_setup, req
     setting_entity.update({'value'})
 
 
-@pytest.mark.external_auth
+@pytest.fixture(scope='module')
+def module_enroll_ad_and_configure_external_auth(ad_data, module_target_sat):
+    module_target_sat.enroll_ad_and_configure_external_auth(ad_data)
+
+
 @pytest.fixture
-def enroll_ad_and_configure_external_auth(request, ad_data, target_sat):
-    """Enroll Satellite Server to an AD Server."""
-    auth_type = request.param.lower()
-    ad_data = ad_data('2019') if '2019' in auth_type else ad_data()
-    packages = (
-        'sssd adcli realmd ipa-python-compat krb5-workstation '
-        'samba-common-tools gssproxy nfs-utils ipa-client'
+def func_enroll_ad_and_configure_external_auth(ad_data, target_sat):
+    target_sat.enroll_ad_and_configure_external_auth(ad_data)
+
+
+@pytest.fixture
+def configure_hammer_no_creds(parametrized_enrolled_sat):
+    """Configures hammer to use sessions and negotiate auth."""
+    parametrized_enrolled_sat.execute(f'cp {HAMMER_CONFIG} {HAMMER_CONFIG}.backup')
+    parametrized_enrolled_sat.execute(f"sed -i '/:username.*/d' {HAMMER_CONFIG}")
+    parametrized_enrolled_sat.execute(f"sed -i '/:password.*/d' {HAMMER_CONFIG}")
+    yield
+    parametrized_enrolled_sat.execute(f'mv -f {HAMMER_CONFIG}.backup {HAMMER_CONFIG}')
+
+
+@pytest.fixture
+def configure_hammer_negotiate(parametrized_enrolled_sat, configure_hammer_no_creds):
+    """Configures hammer to use sessions and negotiate auth."""
+    parametrized_enrolled_sat.execute(f'cp {HAMMER_CONFIG} {HAMMER_CONFIG}.backup')
+    parametrized_enrolled_sat.execute(f"sed -i '/:default_auth_type.*/d' {HAMMER_CONFIG}")
+    parametrized_enrolled_sat.execute(f"sed -i '/:use_sessions.*/d' {HAMMER_CONFIG}")
+    parametrized_enrolled_sat.execute(f"echo '  :use_sessions: true' >> {HAMMER_CONFIG}")
+    parametrized_enrolled_sat.execute(
+        f"echo '  :default_auth_type: Negotiate_Auth' >> {HAMMER_CONFIG}"
     )
-    realm = ad_data.realm
-    workgroup = ad_data.workgroup
+    yield
+    parametrized_enrolled_sat.execute(f'mv -f {HAMMER_CONFIG}.backup {HAMMER_CONFIG}')
 
-    default_content = f'[global]\nserver = unused\nrealm = {realm}'
-    keytab_content = (
-        f'[global]\nworkgroup = {workgroup}\nrealm = {realm}'
-        f'\nkerberos method = system keytab\nsecurity = ads'
+
+@pytest.fixture
+def configure_hammer_no_negotiate(parametrized_enrolled_sat):
+    """Configures hammer not to use automatic negotiation."""
+    parametrized_enrolled_sat.execute(f'cp {HAMMER_CONFIG} {HAMMER_CONFIG}.backup')
+    parametrized_enrolled_sat.execute(f"sed -i '/:default_auth_type.*/d' {HAMMER_CONFIG}")
+    yield
+    parametrized_enrolled_sat.execute(f'mv -f {HAMMER_CONFIG}.backup {HAMMER_CONFIG}')
+
+
+@pytest.fixture
+def hammer_logout(parametrized_enrolled_sat):
+    """Logout in Hammer."""
+    result = parametrized_enrolled_sat.cli.Auth.logout()
+    assert result.split("\n")[1] == LOGGEDOUT
+    yield
+    result = parametrized_enrolled_sat.cli.Auth.logout()
+    assert result.split("\n")[1] == LOGGEDOUT
+
+
+@pytest.fixture
+def sessions_tear_down(parametrized_enrolled_sat):
+    """Destroy Kerberos and hammer sessions on teardown."""
+    yield
+    parametrized_enrolled_sat.execute('kdestroy')
+    parametrized_enrolled_sat.execute(
+        f'rm -f {HAMMER_SESSIONS}/https_{parametrized_enrolled_sat.hostname}'
     )
 
-    # install the required packages
-    target_sat.execute(f'yum -y --disableplugin=foreman-protector install {packages}')
 
-    # update the AD name server
-    target_sat.execute('chattr -i /etc/resolv.conf')
-    line_number = str(
-        target_sat.execute(
-            "awk -v search='nameserver' '$0~search{print NR; exit}' /etc/resolv.conf"
+@pytest.fixture
+def configure_ipa_api(
+    request,
+    parametrized_enrolled_sat,
+    enabled=True,
+):
+    """Enable Kerberos authentication in Hammer."""
+    if enabled:
+        # Normal ipa authentication needs to be enabled already
+        assert (
+            parametrized_enrolled_sat.execute(
+                'satellite-installer --help | grep foreman-ipa-authentication[^-] | grep true'
+            ).status
+            == 0
         )
-    ).strip()
-    target_sat.execute(f'sed -i "{line_number}i nameserver {ad_data.nameserver}" /etc/resolv.conf')
-    target_sat.execute('chattr +i /etc/resolv.conf')
-
-    # join the realm
-    target_sat.execute(f'echo {settings.ldap.password} | realm join -v {realm}')
-    target_sat.execute('touch /etc/ipa/default.conf')
-    target_sat.execute(f'echo "{default_content}" > /etc/ipa/default.conf')
-    target_sat.execute(f'echo "{keytab_content}" > /etc/net-keytab.conf')
-
-    # gather the apache id
-    result = str(target_sat.execute('id -u apache')).strip()
-    id_apache = result
-    http_conf_content = (
-        f'[service/HTTP]\nmechs = krb5\ncred_store = keytab:/etc/krb5.keytab'
-        f'\ncred_store = ccache:/var/lib/gssproxy/clients/krb5cc_%U'
-        f'\neuid = {id_apache}'
+    original_value = (
+        parametrized_enrolled_sat.execute(
+            'satellite-installer --help | grep foreman-ipa-authentication-api | grep true'
+        ).status
+        == 0
     )
-
-    # register the satellite as client for external auth
-    target_sat.execute(f'echo "{http_conf_content}" > /etc/gssproxy/00-http.conf')
-    token_command = (
-        'KRB5_KTNAME=FILE:/etc/httpd/conf/http.keytab net ads keytab add HTTP '
-        '-U administrator -d3 -s /etc/net-keytab.conf'
+    result = parametrized_enrolled_sat.install(
+        InstallerCommand(f'foreman-ipa-authentication-api {"true" if enabled else "false"}')
     )
-    target_sat.execute(f'echo {settings.ldap.password} | {token_command}')
-    target_sat.execute('chown root.apache /etc/httpd/conf/http.keytab')
-    target_sat.execute('chmod 640 /etc/httpd/conf/http.keytab')
+    assert result.status == 0, 'Installer failed to enable IPA API authentication.'
+    yield
+    result = parametrized_enrolled_sat.install(
+        InstallerCommand(f'foreman-ipa-authentication-api {"true" if original_value else "false"}')
+    )
+    assert result.status == 0, 'Installer failed to reset IPA API authentication.'

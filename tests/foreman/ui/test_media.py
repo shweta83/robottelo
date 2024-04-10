@@ -4,24 +4,20 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Hosts
 
-:Assignee: pdragun
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: Low
 
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
+import pytest
 
 from robottelo.constants import INSTALL_MEDIUM_URL
 
 
+@pytest.mark.e2e
 @pytest.mark.tier2
 @pytest.mark.upgrade
 def test_positive_end_to_end(session, module_org, module_location):
@@ -30,8 +26,6 @@ def test_positive_end_to_end(session, module_org, module_location):
     :id: fb7a248a-21ef-43b2-a488-8d7628a55ccd
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """

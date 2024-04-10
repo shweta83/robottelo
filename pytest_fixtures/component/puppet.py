@@ -1,66 +1,38 @@
 # Puppet Environment fixtures
 import pytest
 
-from robottelo.config import settings
 from robottelo.constants import ENVIRONMENT
-from robottelo.constants import RHEL_6_MAJOR_VERSION
-from robottelo.constants import RHEL_7_MAJOR_VERSION
-from robottelo.constants import RHEL_8_MAJOR_VERSION
-from robottelo.helpers import InstallerCommand
-
-
-common_opts = {
-    'foreman-proxy-puppetca': 'true',
-    'foreman-proxy-content-puppet': 'true',
-    'foreman-proxy-puppet': 'true',
-    'puppet-server': 'true',
-    'puppet-server-foreman-ssl-ca': '/etc/pki/katello/puppet/puppet_client_ca.crt',
-    'puppet-server-foreman-ssl-cert': '/etc/pki/katello/puppet/puppet_client.crt',
-    'puppet-server-foreman-ssl-key': '/etc/pki/katello/puppet/puppet_client.key',
-    # Options for puppetbootstrap test
-    'foreman-proxy-templates': 'true',
-    'foreman-proxy-http': 'true',
-}
-
-enable_satellite_cmd = InstallerCommand(
-    installer_args=[
-        'enable-foreman-plugin-puppet',
-        'enable-foreman-cli-puppet',
-        'enable-puppet',
-    ],
-    installer_opts=common_opts,
-)
-
-enable_capsule_cmd = InstallerCommand(
-    installer_args=[
-        'enable-puppet',
-    ],
-    installer_opts=common_opts,
-)
 
 
 @pytest.fixture(scope='session')
 def session_puppet_enabled_sat(session_satellite_host):
     """Satellite with enabled puppet plugin"""
-    result = session_satellite_host.execute(enable_satellite_cmd.get_command(), timeout='20m')
-    assert result.status == 0
-    session_satellite_host.execute('hammer -r')  # workaround for BZ#2039696
-    yield session_satellite_host
+    if session_satellite_host:
+        yield session_satellite_host.enable_puppet_satellite()
+    else:
+        yield
+
+
+@pytest.fixture(scope='session')
+def session_puppet_enabled_capsule(session_capsule_host, session_puppet_enabled_sat):
+    """Capsule with enabled puppet plugin"""
+    session_capsule_host.capsule_setup(sat_host=session_puppet_enabled_sat)
+    return session_capsule_host.enable_puppet_capsule(satellite=session_puppet_enabled_sat)
 
 
 @pytest.fixture(scope='module')
 def module_puppet_org(session_puppet_enabled_sat):
-    yield session_puppet_enabled_sat.api.Organization().create()
+    return session_puppet_enabled_sat.api.Organization().create()
 
 
 @pytest.fixture(scope='module')
 def module_puppet_loc(session_puppet_enabled_sat):
-    yield session_puppet_enabled_sat.api.Location().create()
+    return session_puppet_enabled_sat.api.Location().create()
 
 
 @pytest.fixture(scope='module')
 def module_puppet_domain(session_puppet_enabled_sat, module_puppet_loc, module_puppet_org):
-    yield session_puppet_enabled_sat.api.Domain(
+    return session_puppet_enabled_sat.api.Domain(
         location=[module_puppet_loc], organization=[module_puppet_org]
     ).create()
 
@@ -72,6 +44,7 @@ def default_puppet_environment(module_puppet_org, session_puppet_enabled_sat):
     )
     if environments:
         return environments[0].read()
+    return None
 
 
 @pytest.fixture(scope='module')
@@ -82,7 +55,6 @@ def module_puppet_environment(module_puppet_org, module_puppet_loc, session_pupp
     return session_puppet_enabled_sat.api.Environment(id=environment.id).read()
 
 
-@pytest.mark.skipif((not settings.robottelo.repos_hosting_url), reason='Missing repos_hosting_url')
 @pytest.fixture(scope='module')
 def module_import_puppet_module(session_puppet_enabled_sat):
     """Returns custom puppet environment name that contains imported puppet module
@@ -130,10 +102,7 @@ def module_puppet_classes(
 
 @pytest.fixture(scope='session', params=[True, False], ids=["puppet_enabled", "puppet_disabled"])
 def parametrized_puppet_sat(request, session_target_sat, session_puppet_enabled_sat):
-    if request.param:
-        sat = session_puppet_enabled_sat
-    else:
-        sat = session_target_sat
+    sat = session_puppet_enabled_sat if request.param else session_target_sat
     return {'sat': sat, 'enabled': request.param}
 
 
@@ -150,10 +119,7 @@ def session_puppet_enabled_proxy(session_puppet_enabled_sat):
 @pytest.fixture(scope='session')
 def session_puppet_default_os(session_puppet_enabled_sat):
     """Default OS on the puppet-enabled Satellite"""
-    search_string = (
-        f'name="RedHat" AND (major="{RHEL_6_MAJOR_VERSION}" '
-        f'OR major="{RHEL_7_MAJOR_VERSION}" OR major="{RHEL_8_MAJOR_VERSION}")'
-    )
+    search_string = 'name="RedHat" AND (major="6" OR major="7" OR major="8")'
     return (
         session_puppet_enabled_sat.api.OperatingSystem()
         .search(query={'search': search_string})[0]

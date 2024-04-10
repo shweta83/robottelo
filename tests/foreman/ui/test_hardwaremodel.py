@@ -4,33 +4,24 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Hosts
 
-:Assignee: pdragun
+:Team: Endeavour
 
-:TestType: Functional
-
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
-from nailgun import entities
-
-from robottelo.ui.utils import create_fake_host
+import pytest
 
 
+@pytest.mark.e2e
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_end_to_end(session, module_org, module_location):
+def test_positive_end_to_end(session, host_ui_options, module_target_sat):
     """Perform end to end testing for hardware model component
 
     :id: 93663cc9-7c8f-4f43-8050-444be1313bed
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: Medium
 
@@ -41,9 +32,9 @@ def test_positive_end_to_end(session, module_org, module_location):
     vendor_class = gen_string('alpha')
     info = gen_string('alpha')
     new_name = gen_string('alpha')
-    host_template = entities.Host(organization=module_org, location=module_location)
-    host_template.create_missing()
+    values, host_name = host_ui_options
     with session:
+        session.location.select(values['host.location'])
         # Create new hardware model
         session.hardwaremodel.create(
             {'name': name, 'hardware_model': model, 'vendor_class': vendor_class, 'info': info}
@@ -55,9 +46,9 @@ def test_positive_end_to_end(session, module_org, module_location):
         assert hm_values['vendor_class'] == vendor_class
         assert hm_values['info'] == info
         # Create host with associated hardware model
-        host_name = create_fake_host(
-            session, host_template, extra_values={'additional_information.hardware_model': name}
-        )
+        session.host.create(values)
+        values.update({'additional_information.hardware_model': name})
+        session.host.update(host_name, {'additional_information.hardware_model': name})
         host_values = session.host.read(host_name, 'additional_information')
         assert host_values['additional_information']['hardware_model'] == name
         # Update hardware model with new name
@@ -70,4 +61,4 @@ def test_positive_end_to_end(session, module_org, module_location):
         session.host.update(host_name, {'additional_information.hardware_model': ''})
         # Delete hardware model
         session.hardwaremodel.delete(new_name)
-        assert not entities.Host().search(query={'search': f'name="{new_name}"'})
+        assert not module_target_sat.api.Host().search(query={'search': f'name="{new_name}"'})

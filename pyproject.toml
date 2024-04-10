@@ -15,7 +15,48 @@ exclude = '''
 )/
 '''
 
+[tool.ruff]
+target-version = "py311"
+fixable = ["ALL"]
+
+select = [
+    "B",  # bugbear
+    # "C90", # mccabe
+    "E",  # pycodestyle
+    "F",  # flake8
+    "I", # isort
+    # "Q",  # flake8-quotes
+    "PT",  # flake8-pytest
+    "RET",  # flake8-return
+    "SIM",  # flake8-simplify
+    "UP",  # pyupgrade
+    "W",  # pycodestyle
+]
+
+ignore = [
+    "B019",  # lru_cache can lead to memory leaks - acceptable tradeoff
+    "E501",  # line too long - handled by black
+    "PT004", # pytest underscrore prefix for non-return fixtures
+    "PT005", # pytest no underscrore prefix for return fixtures
+]
+
+[tool.ruff.isort]
+force-sort-within-sections = true
+known-first-party = [
+    "robottelo",
+]
+combine-as-imports = true
+
+[tool.ruff.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.flake8-quotes]
+inline-quotes = "single"
+
+[tool.ruff.mccabe]
+max-complexity = 20
+
 [tool.pytest.ini_options]
 junit_logging = 'all'
-rp_ignore_errors = 'True'
 addopts = '--show-capture=no'

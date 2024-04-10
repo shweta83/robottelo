@@ -4,48 +4,21 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: SyncPlans
 
-:Assignee: sbible
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
+from datetime import datetime, timedelta
 import time
-from datetime import datetime
-from datetime import timedelta
 
-import pytest
 from fauxfactory import gen_choice
-from nailgun import entities
+import pytest
 
-from robottelo.api.utils import disable_syncplan
-from robottelo.api.utils import wait_for_tasks
 from robottelo.constants import SYNC_INTERVAL
-from robottelo.datafactory import gen_string
-from robottelo.datafactory import valid_cron_expressions
-
-
-def validate_task_status(repo_id, org_id, max_tries=10):
-    """Wait for foreman_tasks to complete or timeout
-
-    :param repo_id: Repository Id to identify the correct task
-    :param max_tries: Max tries to poll for the task creation
-    :param org_id: Org ID to ensure valid check on busy Satellite
-    """
-    wait_for_tasks(
-        search_query='Actions::Katello::Repository::Sync'
-        f' and organization_id = {org_id}'
-        f' and resource_id = {repo_id}'
-        ' and resource_type = Katello::Repository',
-        max_tries=max_tries,
-        search_rate=10,
-    )
+from robottelo.utils.datafactory import gen_string, valid_cron_expressions
 
 
 def validate_repo_content(repo, content_types, after_sync=True):
@@ -72,13 +45,8 @@ def validate_repo_content(repo, content_types, after_sync=True):
             ), 'Repository contains invalid number of content entities.'
 
 
-@pytest.fixture(scope='module')
-def module_org():
-    return entities.Organization().create()
-
-
 @pytest.mark.tier2
-def test_positive_end_to_end(session, module_org):
+def test_positive_end_to_end(session, module_org, target_sat):
     """Perform end to end scenario for sync plan component
 
     :id: 39c140a6-ca65-4b6a-a640-4a023a2f0f12
@@ -86,8 +54,6 @@ def test_positive_end_to_end(session, module_org):
     :expectedresults: All CRUD actions for component finished successfully
 
     :customerscenario: true
-
-    :CaseLevel: Integration
 
     :BZ: 1693795
     """
@@ -123,7 +89,8 @@ def test_positive_end_to_end(session, module_org):
         assert syncplan_values['details']['description'] == new_description
         # Create and add two products to sync plan
         for _ in range(2):
-            product = entities.Product(organization=module_org).create()
+            product = target_sat.api.Product(organization=module_org).create()
+            target_sat.api.Repository(product=product).create()
             session.syncplan.add_product(plan_name, product.name)
         # Remove a product and assert syncplan still searchable
         session.syncplan.remove_product(plan_name, product.name)
@@ -140,8 +107,6 @@ def test_positive_end_to_end_custom_cron(session):
     :id: 48c88529-6318-47b0-97bc-eb46aae0294a
 
     :expectedresults: All CRUD actions for component finished successfully
-
-    :CaseLevel: Integration
     """
     plan_name = gen_string('alpha')
     description = gen_string('alpha')
@@ -181,7 +146,7 @@ def test_positive_end_to_end_custom_cron(session):
 
 @pytest.mark.tier2
 @pytest.mark.upgrade
-def test_positive_search_scoped(session, request):
+def test_positive_search_scoped(session, request, target_sat):
     """Test scoped search for different sync plan parameters
 
     :id: 3a48513e-205d-47a3-978e-79b764cc74d9
@@ -196,16 +161,16 @@ def test_positive_search_scoped(session, request):
     """
     name = gen_string('alpha')
     start_date = datetime.utcnow() + timedelta(days=10)
-    org = entities.Organization().create()
-    sync_plan = entities.SyncPlan(
+    org = target_sat.api.Organization().create()
+    sync_plan = target_sat.api.SyncPlan(
         name=name,
         interval=SYNC_INTERVAL['day'],
         organization=org,
         enabled=True,
         sync_date=start_date,
     ).create()
-    sync_plan = entities.SyncPlan(organization=org.id, id=sync_plan.id).read()
-    request.addfinalizer(lambda: disable_syncplan(sync_plan))
+    sync_plan = target_sat.api.SyncPlan(organization=org.id, id=sync_plan.id).read()
+    request.addfinalizer(lambda: target_sat.api_factory.disable_syncplan(sync_plan))
     with session:
         session.organization.select(org.name)
         for query_type, query_value in [('interval', SYNC_INTERVAL['day']), ('enabled', 'true')]:
@@ -213,8 +178,9 @@ def test_positive_search_scoped(session, request):
         assert name not in session.syncplan.search('enabled = false')
 
 
+@pytest.mark.e2e
 @pytest.mark.tier3
-def test_positive_synchronize_custom_product_custom_cron_real_time(session, module_org):
+def test_positive_synchronize_custom_product_custom_cron_real_time(session, module_org, target_sat):
     """Create a sync plan with real datetime as a sync date,
     add a custom product and verify the product gets synchronized
     on the next sync occurrence based on custom cron interval
@@ -222,12 +188,10 @@ def test_positive_synchronize_custom_product_custom_cron_real_time(session, modu
     :id: c551ef9a-6e5a-435a-b24d-e86de203a2bb
 
     :expectedresults: Product is synchronized successfully.
-
-    :CaseLevel: System
     """
     plan_name = gen_string('alpha')
-    product = entities.Product(organization=module_org).create()
-    repo = entities.Repository(product=product).create()
+    product = target_sat.api.Product(organization=module_org).create()
+    repo = target_sat.api.Repository(product=product).create()
     with session:
         # workaround: force session.browser to point to browser object on next line
         session.contenthost.read_all('current_user')
@@ -251,12 +215,25 @@ def test_positive_synchronize_custom_product_custom_cron_real_time(session, modu
         session.syncplan.add_product(plan_name, product.name)
         # check that product was not synced
         with pytest.raises(AssertionError) as context:
-            validate_task_status(repo.id, module_org.id, max_tries=1)
+            target_sat.wait_for_tasks(
+                search_query='Actions::Katello::Repository::Sync'
+                f' and organization_id = {module_org.id}'
+                f' and resource_id = {repo.id}'
+                ' and resource_type = Katello::Repository',
+                max_tries=1,
+                search_rate=10,
+            )
         assert 'No task was found using query' in str(context.value)
         validate_repo_content(repo, ['erratum', 'rpm', 'package_group'], after_sync=False)
         # Waiting part of delay that is left and check that product was synced
         time.sleep(next_sync)
-        validate_task_status(repo.id, module_org.id)
+        target_sat.wait_for_tasks(
+            search_query='Actions::Katello::Repository::Sync'
+            f' and organization_id = {module_org.id}'
+            f' and resource_id = {repo.id}'
+            ' and resource_type = Katello::Repository',
+            search_rate=10,
+        )
         validate_repo_content(repo, ['erratum', 'rpm', 'package_group'])
         repo_values = session.repository.read(product.name, repo.name)
         for repo_type in ['Packages', 'Errata', 'Package Groups']:
@@ -267,7 +244,9 @@ def test_positive_synchronize_custom_product_custom_cron_real_time(session, modu
 
 
 @pytest.mark.tier3
-def test_positive_synchronize_custom_product_custom_cron_past_sync_date(session, module_org):
+def test_positive_synchronize_custom_product_custom_cron_past_sync_date(
+    session, module_org, target_sat
+):
     """Create a sync plan with past datetime as a sync date,
     add a custom product and verify the product gets synchronized
     on the next sync occurrence based on custom cron interval
@@ -275,12 +254,10 @@ def test_positive_synchronize_custom_product_custom_cron_past_sync_date(session,
     :id: 4d9ed0bf-a63c-44de-846d-7cf302273bcc
 
     :expectedresults: Product is synchronized successfully.
-
-    :CaseLevel: System
     """
     plan_name = gen_string('alpha')
-    product = entities.Product(organization=module_org).create()
-    repo = entities.Repository(product=product).create()
+    product = target_sat.api.Product(organization=module_org).create()
+    repo = target_sat.api.Repository(product=product).create()
     with session:
         # workaround: force session.browser to point to browser object on next line
         session.contenthost.read_all('current_user')
@@ -304,12 +281,25 @@ def test_positive_synchronize_custom_product_custom_cron_past_sync_date(session,
         session.syncplan.add_product(plan_name, product.name)
         # check that product was not synced
         with pytest.raises(AssertionError) as context:
-            validate_task_status(repo.id, module_org.id, max_tries=1)
+            target_sat.wait_for_tasks(
+                search_query='Actions::Katello::Repository::Sync'
+                f' and organization_id = {module_org.id}'
+                f' and resource_id = {repo.id}'
+                ' and resource_type = Katello::Repository',
+                max_tries=1,
+                search_rate=10,
+            )
         assert 'No task was found using query' in str(context.value)
         validate_repo_content(repo, ['erratum', 'rpm', 'package_group'], after_sync=False)
         # Waiting part of delay that is left and check that product was synced
         time.sleep(next_sync)
-        validate_task_status(repo.id, module_org.id)
+        target_sat.wait_for_tasks(
+            search_query='Actions::Katello::Repository::Sync'
+            f' and organization_id = {module_org.id}'
+            f' and resource_id = {repo.id}'
+            ' and resource_type = Katello::Repository',
+            search_rate=10,
+        )
         validate_repo_content(repo, ['erratum', 'rpm', 'package_group'])
         repo_values = session.repository.read(product.name, repo.name)
         for repo_type in ['Packages', 'Errata', 'Package Groups']:

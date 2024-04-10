@@ -4,32 +4,23 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: Repositories
 
-:Assignee: chiggins
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import pytest
 from nailgun.entity_mixins import TaskFailedError
+import pytest
 
 from robottelo import constants
-from robottelo import manifests
-from robottelo.api.utils import enable_rhrepo_and_fetchid
-from robottelo.api.utils import upload_manifest
-from robottelo.api.utils import wait_for_tasks
 
 pytestmark = pytest.mark.destructive
 
 
 @pytest.mark.run_in_one_thread
-def test_positive_reboot_recover_sync(target_sat):
+def test_positive_reboot_recover_sync(target_sat, function_entitlement_manifest_org):
     """Reboot during repo sync and resume the sync when the Satellite is online
 
     :id: 4f746e28-444c-4688-b92b-778a6e58d614
@@ -45,10 +36,8 @@ def test_positive_reboot_recover_sync(target_sat):
 
     :CaseAutomation: Automated
     """
-    org = target_sat.api.Organization().create()
-    with manifests.clone() as manifest:
-        upload_manifest(org.id, manifest.content)
-    rhel7_extra = enable_rhrepo_and_fetchid(
+    org = function_entitlement_manifest_org
+    rhel7_extra = target_sat.api_factory.enable_rhrepo_and_fetchid(
         basearch='x86_64',
         org_id=org.id,
         product=constants.PRDS['rhel'],
@@ -60,14 +49,14 @@ def test_positive_reboot_recover_sync(target_sat):
     sync_task = rhel7_extra.sync(synchronous=False)
     target_sat.power_control(state='reboot', ensure=True)
     try:
-        wait_for_tasks(
+        target_sat.wait_for_tasks(
             search_query=(f'id = {sync_task["id"]}'),
             search_rate=15,
             max_tries=10,
         )
     except TaskFailedError:
         sync_task = rhel7_extra.sync(synchronous=False)
-        wait_for_tasks(
+        target_sat.wait_for_tasks(
             search_query=(f'id = {sync_task["id"]}'),
             search_rate=15,
             max_tries=10,

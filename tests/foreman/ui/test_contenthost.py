@@ -4,60 +4,60 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: Hosts-Content
 
-:Assignee: spusater
-
-:TestType: Functional
+:team: Phoenix-subscriptions
 
 :CaseImportance: High
 
-:Upstream: No
 """
+from datetime import datetime, timedelta
 import re
-from datetime import datetime
-from datetime import timedelta
 from urllib.parse import urlparse
 
+from fauxfactory import gen_integer, gen_string
 import pytest
-from airgun.session import Session
-from fauxfactory import gen_integer
-from fauxfactory import gen_string
-from nailgun import entities
 
-from robottelo.api.utils import wait_for_tasks
-from robottelo.cli.factory import CLIFactoryError
-from robottelo.cli.factory import make_fake_host
-from robottelo.cli.factory import make_virt_who_config
-from robottelo.config import setting_is_set
-from robottelo.config import settings
-from robottelo.constants import DEFAULT_SYSPURPOSE_ATTRIBUTES
-from robottelo.constants import DISTRO_RHEL7
-from robottelo.constants import DISTRO_RHEL8
-from robottelo.constants import FAKE_0_CUSTOM_PACKAGE
-from robottelo.constants import FAKE_0_CUSTOM_PACKAGE_GROUP
-from robottelo.constants import FAKE_0_CUSTOM_PACKAGE_GROUP_NAME
-from robottelo.constants import FAKE_0_CUSTOM_PACKAGE_NAME
-from robottelo.constants import FAKE_1_CUSTOM_PACKAGE
-from robottelo.constants import FAKE_1_CUSTOM_PACKAGE_NAME
-from robottelo.constants import FAKE_1_ERRATA_ID
-from robottelo.constants import FAKE_2_CUSTOM_PACKAGE
-from robottelo.constants import FAKE_2_CUSTOM_PACKAGE_NAME
-from robottelo.constants import VDC_SUBSCRIPTION_NAME
-from robottelo.constants import VIRT_WHO_HYPERVISOR_TYPES
-from robottelo.virtwho_utils import create_fake_hypervisor_content
+from robottelo.config import setting_is_set, settings
+from robottelo.constants import (
+    DEFAULT_SYSPURPOSE_ATTRIBUTES,
+    FAKE_0_CUSTOM_PACKAGE,
+    FAKE_0_CUSTOM_PACKAGE_GROUP,
+    FAKE_0_CUSTOM_PACKAGE_GROUP_NAME,
+    FAKE_0_CUSTOM_PACKAGE_NAME,
+    FAKE_1_CUSTOM_PACKAGE,
+    FAKE_1_CUSTOM_PACKAGE_NAME,
+    FAKE_1_ERRATA_ID,
+    FAKE_2_CUSTOM_PACKAGE,
+    FAKE_2_CUSTOM_PACKAGE_NAME,
+    VDC_SUBSCRIPTION_NAME,
+    VIRT_WHO_HYPERVISOR_TYPES,
+)
+from robottelo.exceptions import CLIFactoryError
+from robottelo.utils.issue_handlers import is_open
+from robottelo.utils.virtwho import create_fake_hypervisor_content
 
 if not setting_is_set('clients') or not setting_is_set('fake_manifest'):
     pytest.skip('skipping tests due to missing settings', allow_module_level=True)
 
 
+@pytest.fixture(scope='module', autouse=True)
+def host_ui_default(module_target_sat):
+    settings_object = module_target_sat.api.Setting().search(
+        query={'search': 'name=host_details_ui'}
+    )[0]
+    settings_object.value = 'No'
+    settings_object.update({'value'})
+    yield
+    settings_object.value = 'Yes'
+    settings_object.update({'value'})
+
+
 @pytest.fixture(scope='module')
-def module_org():
-    org = entities.Organization().create()
+def module_org(module_target_sat):
+    org = module_target_sat.api.Organization(simple_content_access=False).create()
     # adding remote_execution_connect_by_ip=Yes at org level
-    entities.Parameter(
+    module_target_sat.api.Parameter(
         name='remote_execution_connect_by_ip',
         value='Yes',
         organization=org.id,
@@ -70,22 +70,21 @@ def vm(module_repos_collection_with_manifest, rhel7_contenthost, target_sat):
     """Virtual machine registered in satellite"""
     module_repos_collection_with_manifest.setup_virtual_machine(rhel7_contenthost)
     rhel7_contenthost.add_rex_key(target_sat)
-    yield rhel7_contenthost
+    rhel7_contenthost.run(r'subscription-manager repos --enable \*')
+    return rhel7_contenthost
 
 
 @pytest.fixture
 def vm_module_streams(module_repos_collection_with_manifest, rhel8_contenthost, target_sat):
-    """Virtual machine registered in satellite without katello-agent installed"""
-    module_repos_collection_with_manifest.setup_virtual_machine(
-        rhel8_contenthost, install_katello_agent=False
-    )
+    """Virtual machine registered in satellite"""
+    module_repos_collection_with_manifest.setup_virtual_machine(rhel8_contenthost)
     rhel8_contenthost.add_rex_key(satellite=target_sat)
-    yield rhel8_contenthost
+    return rhel8_contenthost
 
 
-def set_ignore_facts_for_os(value=False):
+def set_ignore_facts_for_os(module_target_sat, value=False):
     """Helper to set 'ignore_facts_for_operatingsystem' setting"""
-    ignore_setting = entities.Setting().search(
+    ignore_setting = module_target_sat.api.Setting().search(
         query={'search': 'name="ignore_facts_for_operatingsystem"'}
     )[0]
     ignore_setting.value = str(value)
@@ -98,20 +97,41 @@ def run_remote_command_on_content_host(command, vm_module_streams):
     return result
 
 
-@pytest.fixture(scope='module')
-def module_host_template(module_org, module_location):
-    host_template = entities.Host(organization=module_org, location=module_location)
-    host_template.create_missing()
-    host_template.name = None
-    return host_template
+def get_supported_rhel_versions():
+    """Helper to get the supported base rhel versions for contenthost.
+    return: a list of integers
+    """
+    return [
+        ver for ver in settings.supportability.content_hosts.rhel.versions if isinstance(ver, int)
+    ]
 
 
+def get_rhel_lifecycle_support(rhel_version):
+    """Helper to get what the Lifecycle Support Status should be,
+       based on provided rhel version.
+    :param rhel_version: integer of the current base rhel version
+    :return: string with the expected status of rhel version support
+    """
+    rhels = sorted(get_supported_rhel_versions(), reverse=True)
+    rhel_lifecycle_status = 'Unknown'
+    if rhel_version not in rhels:
+        return rhel_lifecycle_status
+    if rhels.index(rhel_version) <= 1:
+        rhel_lifecycle_status = 'Full support'
+    elif rhels.index(rhel_version) == 2:
+        rhel_lifecycle_status = 'Approaching end of maintenance support'
+    elif rhels.index(rhel_version) >= 3:
+        rhel_lifecycle_status = 'End of maintenance support'
+    return rhel_lifecycle_status
+
+
+@pytest.mark.e2e
 @pytest.mark.tier3
 @pytest.mark.parametrize(
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -122,27 +142,54 @@ def module_host_template(module_org, module_location):
     ],
     indirect=True,
 )
-def test_positive_end_to_end(session, default_location, module_repos_collection_with_manifest, vm):
+@pytest.mark.no_containers
+def test_positive_end_to_end(
+    vm,
+    session,
+    module_org,
+    default_location,
+    module_repos_collection_with_manifest,
+):
     """Create all entities required for content host, set up host, register it
     as a content host, read content host details, install package and errata.
 
     :id: f43f2826-47c1-4069-9c9d-2410fd1b622c
 
+    :setup: Register a rhel7 vm as a content host. Import repos
+        collection and associated manifest.
+
+    :steps:
+        1. Install some outdated version for an applicable package
+        2. In legacy Host UI, find the host status and rhel lifecycle status
+        3. Using legacy ContentHost UI, find the chost and relevant details
+        4. Install the errata, check legacy ContentHost UI and the updated package
+        5. Delete the content host, then try to find it
+
     :expectedresults: content host details are the same as expected, package
         and errata installation are successful
-
-    :CaseLevel: System
 
     :parametrized: yes
 
     :CaseImportance: Critical
     """
+    # Read rhel distro param, determine what rhel lifecycle status should be
+    _distro = module_repos_collection_with_manifest.distro
+    host_rhel_version = None
+    if _distro.startswith('rhel'):
+        host_rhel_version = int(_distro[4:])
+    rhel_status = get_rhel_lifecycle_support(host_rhel_version if not None else 0)
+
     result = vm.run(f'yum -y install {FAKE_1_CUSTOM_PACKAGE}')
     assert result.status == 0
+    startdate = datetime.utcnow().strftime('%m/%d/%Y')
+
     with session:
         session.location.select(default_location.name)
+        session.organization.select(module_org.name)
         # Ensure content host is searchable
-        assert session.contenthost.search(vm.hostname)[0]['Name'] == vm.hostname
+        found_chost = session.contenthost.search(f'{vm.hostname}')
+        assert found_chost, f'Search for contenthost by name: "{vm.hostname}", returned no results.'
+        assert found_chost[0]['Name'] == vm.hostname
         chost = session.contenthost.read(
             vm.hostname, widget_names=['details', 'provisioning_details', 'subscriptions']
         )
@@ -172,6 +219,22 @@ def test_positive_end_to_end(session, default_location, module_repos_collection_
             for repo_index in range(len(module_repos_collection_with_manifest.repos_info))
         }
         assert actual_repos == expected_repos
+        # Check start date for BZ#1920860 (but handle BZ#2112320 offset-by-one bug)
+        custom_product_name = module_repos_collection_with_manifest.custom_product['name']
+        custom_sub = next(
+            item
+            for item in chost['subscriptions']['resources']['assigned']
+            if item["Repository Name"] == custom_product_name
+        )
+        if is_open('BZ:2112320'):
+            assert startdate in custom_sub['Expires']
+        else:
+            assert startdate in custom_sub['Starts']
+        # Ensure host status and details show correct RHEL lifecycle status
+        host_status = session.host.host_status(vm.hostname)
+        host_rhel_lcs = session.contenthost.read(vm.hostname, widget_names=['permission_denied'])
+        assert rhel_status in host_rhel_lcs['permission_denied']
+        assert rhel_status in host_status
         # Update description
         new_description = gen_string('alpha')
         session.contenthost.update(vm.hostname, {'details.description': new_description})
@@ -186,9 +249,7 @@ def test_positive_end_to_end(session, default_location, module_repos_collection_
         packages = session.contenthost.search_package(vm.hostname, FAKE_0_CUSTOM_PACKAGE_NAME)
         assert packages[0]['Installed Package'] == FAKE_0_CUSTOM_PACKAGE
         # Install errata
-        result = session.contenthost.install_errata(
-            vm.hostname, settings.repos.yum_6.errata[2], install_via='rex'
-        )
+        result = session.contenthost.install_errata(vm.hostname, FAKE_1_ERRATA_ID)
         assert result['overview']['hosts_table'][0]['Status'] == 'success'
         # Ensure errata installed
         packages = session.contenthost.search_package(vm.hostname, FAKE_2_CUSTOM_PACKAGE_NAME)
@@ -205,7 +266,7 @@ def test_positive_end_to_end(session, default_location, module_repos_collection_
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -216,6 +277,7 @@ def test_positive_end_to_end(session, default_location, module_repos_collection_
     ],
     indirect=True,
 )
+@pytest.mark.no_containers
 def test_positive_end_to_end_bulk_update(session, default_location, vm, target_sat):
     """Create VM, set up VM as host, register it as a content host,
     read content host details, install a package ( e.g. walrus-0.71) and
@@ -232,8 +294,6 @@ def test_positive_end_to_end_bulk_update(session, default_location, vm, target_s
     :BZ: 1712069, 1838800
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     hc_name = gen_string('alpha')
     description = gen_string('alpha')
@@ -271,7 +331,7 @@ def test_positive_end_to_end_bulk_update(session, default_location, vm, target_s
             action_via='via remote execution',
         )
         # Wait for applicability update event (in case Satellite system slow)
-        wait_for_tasks(
+        target_sat.wait_for_tasks(
             search_query='label = Actions::Katello::Applicability::Hosts::BulkGenerate'
             f' and started_at >= "{timestamp}"'
             f' and state = stopped'
@@ -291,7 +351,7 @@ def test_positive_end_to_end_bulk_update(session, default_location, vm, target_s
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -302,6 +362,7 @@ def test_positive_end_to_end_bulk_update(session, default_location, vm, target_s
     ],
     indirect=True,
 )
+@pytest.mark.no_containers
 def test_positive_search_by_subscription_status(session, default_location, vm):
     """Register host into the system and search for it afterwards by
     subscription status
@@ -315,8 +376,6 @@ def test_positive_search_by_subscription_status(session, default_location, vm):
     :BZ: 1406855, 1498827, 1495271
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     with session:
         session.location.select(default_location.name)
@@ -342,7 +401,7 @@ def test_positive_search_by_subscription_status(session, default_location, vm):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -353,6 +412,7 @@ def test_positive_search_by_subscription_status(session, default_location, vm):
     ],
     indirect=True,
 )
+@pytest.mark.no_containers
 def test_positive_toggle_subscription_status(session, default_location, vm):
     """Register host into the system, assert subscription status valid,
     toggle status off and on again using CLI and assert status is updated in web UI.
@@ -364,8 +424,6 @@ def test_positive_toggle_subscription_status(session, default_location, vm):
     :customerscenario: true
 
     :BZ: 1836868
-
-    :CaseLevel: System
 
     :parametrized: yes
 
@@ -399,7 +457,7 @@ def test_positive_toggle_subscription_status(session, default_location, vm):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -410,6 +468,7 @@ def test_positive_toggle_subscription_status(session, default_location, vm):
     ],
     indirect=True,
 )
+@pytest.mark.no_containers
 def test_negative_install_package(session, default_location, vm):
     """Attempt to install non-existent package to a host remotely
 
@@ -422,8 +481,6 @@ def test_negative_install_package(session, default_location, vm):
     :expectedresults: Task finished with warning
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     with session:
         session.location.select(default_location.name)
@@ -439,7 +496,7 @@ def test_negative_install_package(session, default_location, vm):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -450,6 +507,7 @@ def test_negative_install_package(session, default_location, vm):
     ],
     indirect=True,
 )
+@pytest.mark.no_containers
 def test_positive_remove_package(session, default_location, vm):
     """Remove a package from a host remotely
 
@@ -458,8 +516,6 @@ def test_positive_remove_package(session, default_location, vm):
     :expectedresults: Package was successfully removed
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     vm.download_install_rpm(settings.repos.yum_6.url, FAKE_0_CUSTOM_PACKAGE)
     with session:
@@ -477,7 +533,7 @@ def test_positive_remove_package(session, default_location, vm):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -488,6 +544,7 @@ def test_positive_remove_package(session, default_location, vm):
     ],
     indirect=True,
 )
+@pytest.mark.no_containers
 def test_positive_upgrade_package(session, default_location, vm):
     """Upgrade a host package remotely
 
@@ -496,8 +553,6 @@ def test_positive_upgrade_package(session, default_location, vm):
     :expectedresults: Package was successfully upgraded
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     vm.run(f'yum install -y {FAKE_1_CUSTOM_PACKAGE}')
     with session:
@@ -516,7 +571,7 @@ def test_positive_upgrade_package(session, default_location, vm):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -527,6 +582,7 @@ def test_positive_upgrade_package(session, default_location, vm):
     ],
     indirect=True,
 )
+@pytest.mark.no_containers
 def test_positive_install_package_group(session, default_location, vm):
     """Install a package group to a host remotely
 
@@ -535,8 +591,6 @@ def test_positive_install_package_group(session, default_location, vm):
     :expectedresults: Package group was successfully installed
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     with session:
         session.location.select(default_location.name)
@@ -556,7 +610,7 @@ def test_positive_install_package_group(session, default_location, vm):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -567,6 +621,7 @@ def test_positive_install_package_group(session, default_location, vm):
     ],
     indirect=True,
 )
+@pytest.mark.no_containers
 def test_positive_remove_package_group(session, default_location, vm):
     """Remove a package group from a host remotely
 
@@ -575,8 +630,6 @@ def test_positive_remove_package_group(session, default_location, vm):
     :expectedresults: Package group was successfully removed
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     with session:
         session.location.select(default_location.name)
@@ -594,7 +647,7 @@ def test_positive_remove_package_group(session, default_location, vm):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -606,7 +659,7 @@ def test_positive_remove_package_group(session, default_location, vm):
     indirect=True,
 )
 def test_positive_search_errata_non_admin(
-    session, default_location, vm, test_name, default_viewer_role
+    default_location, vm, test_name, default_viewer_role, module_target_sat
 ):
     """Search for host's errata by non-admin user with enough permissions
 
@@ -620,11 +673,9 @@ def test_positive_search_errata_non_admin(
         listed
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     vm.run(f'yum install -y {FAKE_1_CUSTOM_PACKAGE}')
-    with Session(
+    with module_target_sat.ui_session(
         test_name, user=default_viewer_role.login, password=default_viewer_role.password
     ) as session:
         session.location.select(default_location.name)
@@ -640,7 +691,7 @@ def test_positive_search_errata_non_admin(
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -675,8 +726,6 @@ def test_positive_ensure_errata_applicability_with_host_reregistered(session, de
     :BZ: 1463818
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     vm.run(f'yum install -y {FAKE_1_CUSTOM_PACKAGE}')
     result = vm.run(f'rpm -q {FAKE_1_CUSTOM_PACKAGE}')
@@ -702,7 +751,7 @@ def test_positive_ensure_errata_applicability_with_host_reregistered(session, de
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -735,8 +784,6 @@ def test_positive_host_re_registration_with_host_rename(
     :BZ: 1762793
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     vm.run(f'yum install -y {FAKE_1_CUSTOM_PACKAGE}')
     result = vm.run(f'rpm -q {FAKE_1_CUSTOM_PACKAGE}')
@@ -764,7 +811,7 @@ def test_positive_host_re_registration_with_host_rename(
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -775,7 +822,9 @@ def test_positive_host_re_registration_with_host_rename(
     ],
     indirect=True,
 )
-def test_positive_check_ignore_facts_os_setting(session, default_location, vm, module_org, request):
+def test_positive_check_ignore_facts_os_setting(
+    session, default_location, vm, module_org, request, module_target_sat
+):
     """Verify that 'Ignore facts for operating system' setting works
     properly
 
@@ -804,15 +853,13 @@ def test_positive_check_ignore_facts_os_setting(session, default_location, vm, m
     :BZ: 1155704
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     major = str(gen_integer(15, 99))
     minor = str(gen_integer(1, 9))
     expected_os = f'RedHat {major}.{minor}'
-    set_ignore_facts_for_os(False)
+    set_ignore_facts_for_os(module_target_sat, False)
     host = (
-        entities.Host()
+        module_target_sat.api.Host()
         .search(query={'search': f'name={vm.hostname} and organization_id={module_org.id}'})[0]
         .read()
     )
@@ -821,7 +868,7 @@ def test_positive_check_ignore_facts_os_setting(session, default_location, vm, m
         # Get host current operating system value
         os = session.contenthost.read(vm.hostname, widget_names='details')['details']['os']
         # Change necessary setting to true
-        set_ignore_facts_for_os(True)
+        set_ignore_facts_for_os(module_target_sat, True)
         # Add cleanup function to roll back setting to default value
         request.addfinalizer(set_ignore_facts_for_os)
         # Read all facts for corresponding host
@@ -838,7 +885,7 @@ def test_positive_check_ignore_facts_os_setting(session, default_location, vm, m
         # Check that host OS was not changed due setting was set to true
         assert os == updated_os
         # Put it to false and re-run the process
-        set_ignore_facts_for_os(False)
+        set_ignore_facts_for_os(module_target_sat, False)
         host.upload_facts(data={'name': vm.hostname, 'facts': facts})
         session.contenthost.search('')
         updated_os = session.contenthost.read(vm.hostname, widget_names='details')['details']['os']
@@ -874,15 +921,13 @@ def test_positive_virt_who_hypervisor_subscription_status(
     :BZ: 1336924, 1860928
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
-    org = entities.Organization().create()
-    lce = entities.LifecycleEnvironment(organization=org).create()
+    org = target_sat.api.Organization().create()
+    lce = target_sat.api.LifecycleEnvironment(organization=org).create()
     # TODO move this to either hack around virt-who service or use an env-* compute resource
     provisioning_server = settings.libvirt.libvirt_hostname
     # Create a new virt-who config
-    virt_who_config = make_virt_who_config(
+    virt_who_config = target_sat.cli_factory.virt_who_config(
         {
             'organization-id': org.id,
             'hypervisor-type': VIRT_WHO_HYPERVISOR_TYPES['libvirt'],
@@ -938,7 +983,7 @@ def test_positive_virt_who_hypervisor_subscription_status(
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -949,7 +994,9 @@ def test_positive_virt_who_hypervisor_subscription_status(
     ],
     indirect=True,
 )
-def test_module_stream_actions_on_content_host(session, default_location, vm_module_streams):
+def test_module_stream_actions_on_content_host(
+    session, default_location, vm_module_streams, module_target_sat
+):
     """Check remote execution for module streams actions e.g. install, remove, disable
     works on content host. Verify that correct stream module stream
     get installed/removed.
@@ -959,12 +1006,10 @@ def test_module_stream_actions_on_content_host(session, default_location, vm_mod
     :expectedresults: Remote execution for module actions should succeed.
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     stream_version = '5.21'
     run_remote_command_on_content_host('dnf -y upload-profile', vm_module_streams)
-    entities.Parameter(
+    module_target_sat.api.Parameter(
         name='remote_execution_connect_by_ip',
         value='Yes',
         parameter_type='boolean',
@@ -988,7 +1033,8 @@ def test_module_stream_actions_on_content_host(session, default_location, vm_mod
         )
         assert module_stream[0]['Name'] == FAKE_2_CUSTOM_PACKAGE_NAME
         assert module_stream[0]['Stream'] == stream_version
-        assert 'Enabled' and 'Installed' in module_stream[0]['Status']
+        assert 'Enabled' in module_stream[0]['Status']
+        assert 'Installed' in module_stream[0]['Status']
 
         # remove Module Stream
         result = session.contenthost.execute_module_stream_action(
@@ -1062,7 +1108,7 @@ def test_module_stream_actions_on_content_host(session, default_location, vm_mod
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1079,8 +1125,6 @@ def test_module_streams_customize_action(session, default_location, vm_module_st
     :id: b139ea1f-380b-40a5-bb57-7530a52de18c
 
     :expectedresults: Remote execution for module actions should be succeed.
-
-    :CaseLevel: System
 
     :parametrized: yes
 
@@ -1129,7 +1173,7 @@ def test_module_streams_customize_action(session, default_location, vm_module_st
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1148,8 +1192,6 @@ def test_install_modular_errata(session, default_location, vm_module_streams):
     :expectedresults: Modular Errata should get installed on content host.
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     stream_version = '0'
     module_name = 'kangaroo'
@@ -1208,7 +1250,7 @@ def test_install_modular_errata(session, default_location, vm_module_streams):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1229,8 +1271,6 @@ def test_module_status_update_from_content_host_to_satellite(
     :expectedresults: module stream status should get updated in Satellite
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     module_name = 'walrus'
     stream_version = '0.71'
@@ -1275,7 +1315,7 @@ def test_module_status_update_from_content_host_to_satellite(
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1287,7 +1327,7 @@ def test_module_status_update_from_content_host_to_satellite(
     indirect=True,
 )
 def test_module_status_update_without_force_upload_package_profile(
-    session, default_location, vm_module_streams
+    session, default_location, vm_module_streams, target_sat
 ):
     """Verify you do not have to run dnf upload-profile or restart rhsmcertd
     to update the module stream status to Satellite and that the web UI will also be updated.
@@ -1295,8 +1335,6 @@ def test_module_status_update_without_force_upload_package_profile(
     :id: 16675b57-71c2-4aee-950b-844aa32002d1
 
     :expectedresults: module stream status should get updated in Satellite
-
-    :CaseLevel: System
 
     :parametrized: yes
 
@@ -1315,7 +1353,7 @@ def test_module_status_update_without_force_upload_package_profile(
         vm_module_streams,
     )
     # Wait for applicability update event (in case Satellite system slow)
-    wait_for_tasks(
+    target_sat.wait_for_tasks(
         search_query='label = Actions::Katello::Applicability::Hosts::BulkGenerate'
         f' and started_at >= "{timestamp}"'
         f' and state = stopped'
@@ -1361,7 +1399,7 @@ def test_module_status_update_without_force_upload_package_profile(
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1380,8 +1418,6 @@ def test_module_stream_update_from_satellite(session, default_location, vm_modul
     :expectedresults: module stream should get updated.
 
     :parametrized: yes
-
-    :CaseLevel: System
     """
     module_name = 'duck'
     stream_version = '0'
@@ -1438,7 +1474,7 @@ def test_module_stream_update_from_satellite(session, default_location, vm_modul
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1458,8 +1494,6 @@ def test_syspurpose_attributes_empty(session, default_location, vm_module_stream
 
     :expectedresults: Syspurpose attrs are empty, and syspurpose status is set as 'Not specified'
 
-    :CaseLevel: System
-
     :parametrized: yes
 
     :CaseImportance: High
@@ -1471,7 +1505,7 @@ def test_syspurpose_attributes_empty(session, default_location, vm_module_stream
         ]
         syspurpose_status = details['system_purpose_status']
         assert syspurpose_status.lower() == 'not specified'
-        for spname, spdata in DEFAULT_SYSPURPOSE_ATTRIBUTES.items():
+        for spname in DEFAULT_SYSPURPOSE_ATTRIBUTES:
             assert details[spname] == ''
 
 
@@ -1481,7 +1515,7 @@ def test_syspurpose_attributes_empty(session, default_location, vm_module_stream
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1500,8 +1534,6 @@ def test_set_syspurpose_attributes_cli(session, default_location, vm_module_stre
 
     :expectedresults: Syspurpose attributes set for the content host
 
-    :CaseLevel: System
-
     :parametrized: yes
 
     :CaseImportance: High
@@ -1509,7 +1541,7 @@ def test_set_syspurpose_attributes_cli(session, default_location, vm_module_stre
     with session:
         session.location.select(default_location.name)
         # Set sypurpose attributes
-        for spname, spdata in DEFAULT_SYSPURPOSE_ATTRIBUTES.items():
+        for spdata in DEFAULT_SYSPURPOSE_ATTRIBUTES.values():
             run_remote_command_on_content_host(
                 f'syspurpose set-{spdata[0]} "{spdata[1]}"', vm_module_streams
             )
@@ -1527,7 +1559,7 @@ def test_set_syspurpose_attributes_cli(session, default_location, vm_module_stre
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1547,18 +1579,16 @@ def test_unset_syspurpose_attributes_cli(session, default_location, vm_module_st
 
     :expectedresults: Syspurpose attributes are empty
 
-    :CaseLevel: System
-
     :parametrized: yes
 
     :CaseImportance: High
     """
     # Set sypurpose attributes...
-    for spname, spdata in DEFAULT_SYSPURPOSE_ATTRIBUTES.items():
+    for spdata in DEFAULT_SYSPURPOSE_ATTRIBUTES.values():
         run_remote_command_on_content_host(
             f'syspurpose set-{spdata[0]} "{spdata[1]}"', vm_module_streams
         )
-    for spname, spdata in DEFAULT_SYSPURPOSE_ATTRIBUTES.items():
+    for spdata in DEFAULT_SYSPURPOSE_ATTRIBUTES.values():
         # ...and unset them.
         run_remote_command_on_content_host(f'syspurpose unset-{spdata[0]}', vm_module_streams)
 
@@ -1567,7 +1597,7 @@ def test_unset_syspurpose_attributes_cli(session, default_location, vm_module_st
         details = session.contenthost.read(vm_module_streams.hostname, widget_names='details')[
             'details'
         ]
-        for spname, spdata in DEFAULT_SYSPURPOSE_ATTRIBUTES.items():
+        for spname in DEFAULT_SYSPURPOSE_ATTRIBUTES:
             assert details[spname] == ''
 
 
@@ -1577,7 +1607,7 @@ def test_unset_syspurpose_attributes_cli(session, default_location, vm_module_st
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1597,8 +1627,6 @@ def test_syspurpose_matched(session, default_location, vm_module_streams):
     :id: 6b1ca2f9-5bf2-414f-971e-6bb5add69789
 
     :expectedresults: Syspurpose status is Matched
-
-    :CaseLevel: System
 
     :parametrized: yes
 
@@ -1620,7 +1648,7 @@ def test_syspurpose_matched(session, default_location, vm_module_streams):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL7,
+            'distro': 'rhel7',
             'RHELAnsibleEngineRepository': {'cdn': True},
             'SatelliteToolsRepository': {},
             'YumRepository': [
@@ -1640,8 +1668,6 @@ def test_syspurpose_bulk_action(session, default_location, vm):
     :bz: 1905979, 1931527
 
     :expectedresults: Syspurpose parameters are set and reflected on the host
-
-    :CaseLevel: System
 
     :CaseImportance: High
     """
@@ -1666,7 +1692,7 @@ def test_syspurpose_bulk_action(session, default_location, vm):
     'module_repos_collection_with_manifest',
     [
         {
-            'distro': DISTRO_RHEL8,
+            'distro': 'rhel8',
             'YumRepository': [
                 {'url': settings.repos.rhel8_os.baseos},
                 {'url': settings.repos.rhel8_os.appstream},
@@ -1687,8 +1713,6 @@ def test_syspurpose_mismatched(session, default_location, vm_module_streams):
 
     :expectedresults: Syspurpose status is 'Mismatched'
 
-    :CaseLevel: System
-
     :parametrized: yes
 
     :CaseImportance: High
@@ -1705,7 +1729,7 @@ def test_syspurpose_mismatched(session, default_location, vm_module_streams):
 
 
 @pytest.mark.tier3
-def test_pagination_multiple_hosts_multiple_pages(session, module_host_template):
+def test_pagination_multiple_hosts_multiple_pages(session, module_host_template, target_sat):
     """Create hosts to fill more than one page, sort on OS, check pagination.
 
     Search for hosts based on operating system and assert that more than one page
@@ -1730,7 +1754,7 @@ def test_pagination_multiple_hosts_multiple_pages(session, module_host_template)
     # Create more than one page of fake hosts. Need two digits in name to ensure sort order.
     for count in range(host_num):
         host_name = f'test-{count + 1:0>2}'
-        make_fake_host(
+        target_sat.cli_factory.make_fake_host(
             {
                 'name': host_name,
                 'organization-id': module_host_template.organization.id,
@@ -1743,6 +1767,7 @@ def test_pagination_multiple_hosts_multiple_pages(session, module_host_template)
             }
         )
     with session(url=start_url):
+        session.location.select(module_host_template.location.name)
         # Search for all the hosts by os. This uses pagination to get more than one page.
         all_fake_hosts_found = session.contenthost.search(
             f'os = {module_host_template.operatingsystem.name}'
@@ -1761,7 +1786,7 @@ def test_pagination_multiple_hosts_multiple_pages(session, module_host_template)
 
 
 @pytest.mark.tier3
-def test_search_for_virt_who_hypervisors(session, default_location):
+def test_search_for_virt_who_hypervisors(session, default_location, module_target_sat):
     """
     Search the virt_who hypervisors with hypervisor=True or hypervisor=False.
 
@@ -1773,18 +1798,16 @@ def test_search_for_virt_who_hypervisors(session, default_location):
 
     :customerscenario: true
 
-    :CaseLevel: System
-
     :CaseImportance: Medium
     """
-    org = entities.Organization().create()
+    org = module_target_sat.api.Organization().create()
     with session:
         session.organization.select(org.name)
         session.location.select(default_location.name)
         assert not session.contenthost.search('hypervisor = true')
         # create virt-who hypervisor through the fake json conf
         data = create_fake_hypervisor_content(org.label, hypervisors=1, guests=1)
-        hypervisor_name = data['hypervisors'][0]['hypervisorId']
+        hypervisor_name = data['hypervisors'][0]['name']
         hypervisor_display_name = f'virt-who-{hypervisor_name}-{org.id}'
         # Search with hypervisor=True gives the correct result.
         assert (
@@ -1793,3 +1816,45 @@ def test_search_for_virt_who_hypervisors(session, default_location):
         # Search with hypervisor=false gives the correct result.
         content_hosts = [host['Name'] for host in session.contenthost.search('hypervisor = false')]
         assert hypervisor_display_name not in content_hosts
+
+
+@pytest.mark.rhel_ver_match('[^6]')
+def test_positive_prepare_for_sca_only_content_host(
+    session,
+    function_entitlement_manifest_org,
+    default_location,
+    rhel_contenthost,
+    target_sat,
+):
+    """Verify that the Content Host page notifies users that Entitlement-based subscription
+        management is deprecated and will be removed in Satellite 6.16
+
+    :id: 1a725675-2cf5-4f84-a755-c25f19ef5fd1
+
+    :expectedresults: The Content Host page notifies users that Entitlement-based subscription
+        management is deprecated and will be removed in Satellite 6.16
+    """
+    lce = target_sat.api.LifecycleEnvironment(
+        organization=function_entitlement_manifest_org
+    ).create()
+    cv = target_sat.api.ContentView(
+        organization=function_entitlement_manifest_org, environment=[lce]
+    ).create()
+    cv.publish()
+    cvv = cv.read().version[0].read()
+    cvv.promote(data={'environment_ids': lce.id, 'force': False})
+    ak = target_sat.api.ActivationKey(
+        organization=function_entitlement_manifest_org, content_view=cv, environment=lce
+    ).create()
+    rhel_contenthost.register(
+        function_entitlement_manifest_org, default_location, ak.name, target_sat
+    )
+    with session:
+        session.organization.select(function_entitlement_manifest_org.name)
+        session.location.select(default_location.name)
+        host_details = session.contenthost.read(rhel_contenthost.hostname, widget_names='details')
+        assert (
+            'This organization is not using Simple Content Access. Entitlement-based subscription '
+            'management is deprecated and will be removed in Satellite 6.16.'
+            in host_details['details']['sca_alert']
+        )

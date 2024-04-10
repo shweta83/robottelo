@@ -4,17 +4,12 @@
 
 :CaseAutomation: NotAutomated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: UsersRoles
 
-:Assignee: sganar
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
 

@@ -1,19 +1,26 @@
+import contextlib
 import glob
 import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-import pytest
 from fauxfactory import gen_string
+import pytest
 
 
-@pytest.fixture(scope='function')
+@pytest.fixture(scope='session', autouse=True)
+def align_to_satellite():
+    """Override align_to_satellite used in functional tests"""
+    pass
+
+
+@pytest.fixture
 def dummy_test(request):
     """This should be indirectly parametrized to provide dynamic dummy_tests to exec_test"""
     return request.param
 
 
-@pytest.fixture(scope='function')
+@pytest.fixture
 def exec_test(request, dummy_test):
     """Create a temporary file with the string provided by dummy_test, and run it with pytest.main
 
@@ -38,8 +45,6 @@ def exec_test(request, dummy_test):
     yield report_file
     for logfile in glob.glob('robottelo*.log'):
         os.remove(logfile)
-    try:
-        os.remove(report_file)
-    except OSError:
+    with contextlib.suppress(OSError):
         # the file might not exist if the test fails prematurely
-        pass
+        os.remove(report_file)

@@ -1,11 +1,6 @@
 # Operating System Fixtures
-import pytest
 from nailgun import entities
-
-from robottelo.constants import RHEL_6_MAJOR_VERSION
-from robottelo.constants import RHEL_7_MAJOR_VERSION
-from robottelo.constants import RHEL_8_MAJOR_VERSION
-from robottelo.constants import RHEL_9_MAJOR_VERSION
+import pytest
 
 
 @pytest.fixture(scope='session')
@@ -22,10 +17,7 @@ def default_os(
     """
     os = getattr(request, 'param', None)
     if os is None:
-        search_string = (
-            f'name="RedHat" AND (major="{RHEL_6_MAJOR_VERSION}" '
-            f'OR major="{RHEL_7_MAJOR_VERSION}" OR major="{RHEL_8_MAJOR_VERSION}")'
-        )
+        search_string = 'name="RedHat" AND (major="6" OR major="7" OR major="8")'
     else:
         version = os.split(' ')[1].split('.')
         search_string = f'family="Redhat" AND major="{version[0]}" AND minor="{version[1]}"'
@@ -34,8 +26,7 @@ def default_os(
     os.ptable.append(default_partitiontable)
     os.provisioning_template.append(default_pxetemplate)
     os.update(['architecture', 'ptable', 'provisioning_template'])
-    os = entities.OperatingSystem(id=os.id).read()
-    return os
+    return entities.OperatingSystem(id=os.id).read()
 
 
 @pytest.fixture(scope='module')
@@ -48,13 +39,13 @@ def os_path(default_os):
     from robottelo.config import settings
 
     # Check what OS was found to use correct media
-    if default_os.major == str(RHEL_6_MAJOR_VERSION):
+    if default_os.major == "6":
         os_distr_url = settings.repos.rhel6_os
-    elif default_os.major == str(RHEL_7_MAJOR_VERSION):
+    elif default_os.major == "7":
         os_distr_url = settings.repos.rhel7_os
-    elif default_os.major == str(RHEL_8_MAJOR_VERSION):
+    elif default_os.major == "8":
         os_distr_url = settings.repos.rhel8_os.baseos
-    elif default_os.major == str(RHEL_9_MAJOR_VERSION):
+    elif default_os.major == "9":
         os_distr_url = settings.repos.rhel9_os.baseos
     else:
         pytest.fail('Proposed RHEL version is not supported')

@@ -2,19 +2,22 @@ import multiprocessing
 import os
 import time
 
+from fauxfactory import gen_integer, gen_string
 import pytest
-from fauxfactory import gen_integer
-from fauxfactory import gen_string
 
-from robottelo.decorators.func_shared.file_storage import get_temp_dir
-from robottelo.decorators.func_shared.file_storage import TEMP_FUNC_SHARED_DIR
-from robottelo.decorators.func_shared.file_storage import TEMP_ROOT_DIR
-from robottelo.decorators.func_shared.shared import _NAMESPACE_SCOPE_KEY_TYPE
-from robottelo.decorators.func_shared.shared import _set_configured
-from robottelo.decorators.func_shared.shared import enable_shared_function
-from robottelo.decorators.func_shared.shared import set_default_scope
-from robottelo.decorators.func_shared.shared import shared
-from robottelo.decorators.func_shared.shared import SharedFunctionException
+from robottelo.utils.decorators.func_shared.file_storage import (
+    TEMP_FUNC_SHARED_DIR,
+    TEMP_ROOT_DIR,
+    get_temp_dir,
+)
+from robottelo.utils.decorators.func_shared.shared import (
+    _NAMESPACE_SCOPE_KEY_TYPE,
+    SharedFunctionException,
+    _set_configured,
+    enable_shared_function,
+    set_default_scope,
+    shared,
+)
 
 DEFAULT_POOL_SIZE = 8
 SIMPLE_TIMEOUT_VALUE = 3
@@ -151,7 +154,7 @@ class NotRestorableException(Exception):
 @shared
 def simple_shared_counter_with_exception_not_restored(index=0):
     """Raise exception that should not be restorable"""
-    raise NotRestorableException('error', 'I am not restorable')
+    raise NotRestorableException(msg='error', details='I am not restorable')
 
 
 class TestFuncShared:
@@ -160,13 +163,13 @@ class TestFuncShared:
         # generate a new namespace
         scope = gen_string('alpha', 10)
         set_default_scope(scope)
-        yield scope
+        return scope
 
-    @pytest.fixture(scope='function', autouse=True)
+    @pytest.fixture(autouse=True)
     def enable(self):
         enable_shared_function(True)
 
-    @pytest.fixture(scope='function')
+    @pytest.fixture
     def pool(self):
         pool = multiprocessing.Pool(DEFAULT_POOL_SIZE)
         yield pool
@@ -535,7 +538,7 @@ class TestFuncShared:
         """
         prefixes = [f'pre_{i}' for i in range(10)]
         suffixes = [f'suf_{i}' for i in range(10)]
-        for prefix, suffix in zip(prefixes, suffixes):
+        for prefix, suffix in zip(prefixes, suffixes, strict=True):
             counter_value = gen_integer(min_value=2, max_value=10000)
             inc_string = basic_shared_counter_string(
                 prefix=prefix, suffix=suffix, counter=counter_value

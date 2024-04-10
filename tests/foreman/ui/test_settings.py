@@ -4,28 +4,20 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: Settings
 
-:Assignee: shwsingh
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import math
 
-import pytest
-from airgun.session import Session
 from fauxfactory import gen_url
-from nailgun import entities
+import pytest
 
-from robottelo.cli.user import User
-from robottelo.datafactory import filtered_datapoint
-from robottelo.datafactory import gen_string
+from robottelo.config import settings
+from robottelo.utils.datafactory import filtered_datapoint, gen_string
 
 
 @filtered_datapoint
@@ -34,14 +26,14 @@ def invalid_settings_values():
     return [' ', '-1', 'text', '0']
 
 
-def add_content_views_to_composite(composite_cv, org, repo):
+def add_content_views_to_composite(composite_cv, org, repo, module_target_sat):
     """Add necessary number of content views to the composite one
 
     :param composite_cv: Composite content view object
     :param org: Organisation of satellite
     :param repo: repository need to added in content view
     """
-    content_view = entities.ContentView(organization=org).create()
+    content_view = module_target_sat.api.ContentView(organization=org).create()
     content_view.repository = [repo]
     content_view.update(['repository'])
     content_view.publish()
@@ -53,7 +45,9 @@ def add_content_views_to_composite(composite_cv, org, repo):
 @pytest.mark.run_in_one_thread
 @pytest.mark.tier3
 @pytest.mark.parametrize('setting_update', ['restrict_composite_view'], indirect=True)
-def test_positive_update_restrict_composite_view(session, setting_update, repo_setup):
+def test_positive_update_restrict_composite_view(
+    session, setting_update, repo_setup, module_target_sat
+):
     """Update settings parameter restrict_composite_view to Yes/True and ensure
     a composite content view may not be published or promoted, unless the component
     content view versions that it includes exist in the target environment.
@@ -65,13 +59,13 @@ def test_positive_update_restrict_composite_view(session, setting_update, repo_s
     :expectedresults: Parameter is updated successfully
 
     :CaseImportance: Critical
-
-    :CaseLevel: Acceptance
     """
     property_name = setting_update.name
-    composite_cv = entities.ContentView(composite=True, organization=repo_setup['org']).create()
+    composite_cv = module_target_sat.api.ContentView(
+        composite=True, organization=repo_setup['org']
+    ).create()
     content_view = add_content_views_to_composite(
-        composite_cv, repo_setup['org'], repo_setup['repo']
+        composite_cv, repo_setup['org'], repo_setup['repo'], module_target_sat
     )
     composite_cv.publish()
     with session:
@@ -83,10 +77,10 @@ def test_positive_update_restrict_composite_view(session, setting_update, repo_s
                     session.contentview.promote(
                         composite_cv.name, 'Version 1.0', repo_setup['lce'].name
                     )
-                    assert (
-                        'Administrator -> Settings -> Content page using the '
-                        'restrict_composite_view flag.' in str(context.value)
-                    )
+                assert (
+                    'Administrator -> Settings -> Content page using the '
+                    'restrict_composite_view flag.' in str(context.value)
+                )
             else:
                 result = session.contentview.promote(
                     composite_cv.name, 'Version 1.0', repo_setup['lce'].name
@@ -97,7 +91,6 @@ def test_positive_update_restrict_composite_view(session, setting_update, repo_s
                     session.contentview.delete(content_view_name)
 
 
-@pytest.mark.skip_if_open("BZ:1677282")
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['http_proxy'], indirect=True)
 def test_positive_httpd_proxy_url_update(session, setting_update):
@@ -111,10 +104,7 @@ def test_positive_httpd_proxy_url_update(session, setting_update):
 
     :BZ: 1677282
 
-    :Assignee: jpathan
-
     :CaseImportance: Medium
-
     """
     property_name = setting_update.name
     with session:
@@ -125,7 +115,7 @@ def test_positive_httpd_proxy_url_update(session, setting_update):
 
 
 @pytest.mark.tier2
-@pytest.mark.parametrize('setting_update', ['foreman_url', 'entries_per_page'], indirect=True)
+@pytest.mark.parametrize('setting_update', ['foreman_url'], indirect=True)
 def test_negative_validate_foreman_url_error_message(session, setting_update):
     """Updates some settings with invalid values (an exceptional tier2 test)
 
@@ -140,9 +130,10 @@ def test_negative_validate_foreman_url_error_message(session, setting_update):
     property_name = setting_update.name
     with session:
         invalid_value = [invalid_value for invalid_value in invalid_settings_values()][0]
+        err_msg = 'URL must be valid and schema must be one of http and https, Invalid HTTP(S) URL'
         with pytest.raises(AssertionError) as context:
             session.settings.update(f'name = {property_name}', invalid_value)
-            assert 'Value is invalid: must be integer' in str(context.value)
+        assert err_msg in str(context.value)
 
 
 @pytest.mark.tier2
@@ -160,48 +151,40 @@ def test_positive_host_dmi_uuid_duplicates(session, setting_update):
 
     :CaseImportance: High
     """
-    property_value = gen_string("alpha")
+    property_value = gen_string('alpha')
     property_name = setting_update.name
     with session:
-        session.settings.update(f'name = {setting_update.name}', property_value)
+        session.settings.update(f'name = {property_name}', property_value)
         result = session.settings.read(f'name = {property_name}')
         assert result['table'][0]['Value'].strip('[]') == property_value
 
 
 @pytest.mark.tier2
-@pytest.mark.parametrize(
-    'setting_update', ['register_hostname_fact', 'content_view_solve_dependencies'], indirect=True
-)
-def test_positive_register_hostname_and_cvs_dependencies_update(session, setting_update):
-    """Check the settings of register_hostname_fact & content_view_solve_dependencies value
-       update.
+@pytest.mark.parametrize('setting_update', ['register_hostname_fact'], indirect=True)
+def test_positive_register_hostname_fact_update(session, setting_update):
+    """Check the settings of register_hostname_fact value update.
 
     :id: 3d50c163-6a6d-494a-b0f2-1e1dd8a5c476
 
     :parametrized: yes
 
-    :expectedresults: Value of register_hostname_fact and content_view_solve_dependencies
-        should be updated successfully.
+    :expectedresults: Value of register_hostname_fact should be updated successfully.
 
     :CaseImportance: High
     """
-    property_dict = {
-        "content_view_solve_dependencies": "Yes",
-        "register_hostname_fact": gen_string('alpha'),
-    }
-
     property_name = setting_update.name
+    property_value = gen_string('alpha')
     with session:
-        session.settings.update(f'name = {property_name}', property_dict[setting_update.name])
+        session.settings.update(f'name = {property_name}', property_value)
         result = session.settings.read(f'name = {property_name}')
-        assert result['table'][0]['Value'] == property_dict[setting_update.name]
+        assert result['table'][0]['Value'] == property_value
 
 
 @pytest.mark.tier3
 @pytest.mark.parametrize('setting_update', ['login_text'], indirect=True)
-def test_positive_update_login_page_footer_text_with_long_string(session, setting_update):
-    """Testing to update parameter "Login_page_footer_text with long length
-    string under General tab
+def test_positive_update_login_page_footer_text(session, setting_update):
+    """Testing to update parameter Login_page_footer_text with long length
+    string & empty string under General tab
 
     :id: b1a51594-43e6-49d8-918b-9bc306f3a1a2
 
@@ -211,6 +194,10 @@ def test_positive_update_login_page_footer_text_with_long_string(session, settin
         2. Click on general tab
         3. Input long length string into login page footer field
         4. Assert value from login page
+        5. Input default value into the login page footer field
+        6. Assert default value from login page
+        7. Input empty string into the login page footer field
+        8. Assert empty value from login page
 
     :parametrized: yes
 
@@ -218,18 +205,38 @@ def test_positive_update_login_page_footer_text_with_long_string(session, settin
 
     :CaseImportance: Medium
 
-    :CaseLevel: Acceptance
+    :customerscenario: true
+
+    :BZ: 2157869
     """
     property_name = setting_update.name
+    default_value = setting_update.default
     login_text_data = gen_string('alpha', 270)
+    empty_str = ""
+    login_details = {
+        'username': settings.server.admin_username,
+        'password': settings.server.admin_password,
+    }
     with session:
-        session.settings.update(f"name={property_name}", f"{login_text_data}")
+        session.settings.update(f"name={property_name}", login_text_data)
         result = session.login.logout()
         assert result["login_text"] == login_text_data
 
+        # change back to default (BZ#2157869)
+        session.login.login(login_details)
+        session.settings.update(f'name = {property_name}', default_value)
+        result = session.login.logout()
+        assert result["login_text"] == default_value
+
+        # set empty
+        session.login.login(login_details)
+        session.settings.update(f"name={property_name}", empty_str)
+        result = session.login.logout()
+        assert not result["login_text"]
+
 
 @pytest.mark.tier3
-def test_negative_settings_access_to_non_admin():
+def test_negative_settings_access_to_non_admin(module_target_sat):
     """Check non admin users can't access Administer -> Settings tab
 
     :id: 34bb9376-c5fe-431a-ac0d-ef030c0ab50e
@@ -244,14 +251,12 @@ def test_negative_settings_access_to_non_admin():
     :expectedresults: Administer -> Settings tab should not be available to non admin users
 
     :CaseImportance: Medium
-
-    :CaseLevel: Acceptance
     """
     login = gen_string('alpha')
     password = gen_string('alpha')
-    entities.User(admin=False, login=login, password=password).create()
+    module_target_sat.api.User(admin=False, login=login, password=password).create()
     try:
-        with Session(user=login, password=password) as session:
+        with module_target_sat.ui_session(user=login, password=password) as session:
             result = session.settings.permission_denied()
             assert (
                 result == 'Permission denied You are not authorized to perform this action. '
@@ -259,7 +264,7 @@ def test_negative_settings_access_to_non_admin():
                 'from a Satellite administrator: view_settings Back'
             )
     finally:
-        User.delete({'login': login})
+        module_target_sat.cli.User.delete({'login': login})
 
 
 @pytest.mark.stubbed
@@ -290,8 +295,6 @@ def test_positive_update_email_delivery_method_smtp():
     :expectedresults: Email is sent through SMTP
 
     :CaseImportance: Critical
-
-    :CaseLevel: Acceptance
 
     :CaseAutomation: NotAutomated
     """
@@ -326,8 +329,6 @@ def test_negative_update_email_delivery_method_smtp():
 
     :CaseImportance: Critical
 
-    :CaseLevel: Acceptance
-
     :CaseAutomation: NotAutomated
     """
 
@@ -354,9 +355,9 @@ def test_positive_update_email_delivery_method_sendmail(session, target_sat):
 
     :expectedresults: Email is sent through Sendmail
 
-    :CaseImportance: Critical
+    :BZ: 2080324
 
-    :CaseLevel: Acceptance
+    :CaseImportance: Critical
     """
     property_name = "Email"
     mail_config_default_param = {
@@ -368,24 +369,25 @@ def test_positive_update_email_delivery_method_sendmail(session, target_sat):
         "send_welcome_email": "",
     }
     mail_config_default_param = {
-        content: entities.Setting().search(query={'search': f'name={content}'})[0]
+        content: target_sat.api.Setting().search(query={'search': f'name={content}'})[0]
         for content in mail_config_default_param
     }
     mail_config_new_params = {
         "delivery_method": "Sendmail",
         "email_reply_address": f"root@{target_sat.hostname}",
-        "email_subject_prefix": [gen_string('alpha')],
+        "email_subject_prefix": gen_string('alpha'),
         "sendmail_location": "/usr/sbin/sendmail",
         "send_welcome_email": "Yes",
     }
     command = "grep " + f'{mail_config_new_params["email_subject_prefix"]}' + " /var/mail/root"
-
+    if target_sat.execute('systemctl status postfix').status != 0:
+        target_sat.execute('systemctl restart postfix')
     with session:
         try:
             for mail_content, mail_content_value in mail_config_new_params.items():
                 session.settings.update(mail_content, mail_content_value)
             test_mail_response = session.settings.send_test_mail(property_name)[0]
-            assert test_mail_response == "Success alert: Email was sent successfully"
+            assert "Email was sent successfully" in test_mail_response
             assert target_sat.execute(command).status == 0
         finally:
             for key, value in mail_config_default_param.items():
@@ -418,8 +420,6 @@ def test_negative_update_email_delivery_method_sendmail():
 
     :CaseImportance: Critical
 
-    :CaseLevel: Acceptance
-
     :CaseAutomation: NotAutomated
     """
 
@@ -450,13 +450,10 @@ def test_positive_email_yaml_config_precedence():
 
     :CaseImportance: Critical
 
-    :CaseLevel: Acceptance
-
     :CaseAutomation: NotAutomated
     """
 
 
-@pytest.mark.skip_if_open("BZ:1989706")
 @pytest.mark.tier2
 @pytest.mark.parametrize('setting_update', ['discovery_hostname'], indirect=True)
 def test_negative_update_hostname_with_empty_fact(session, setting_update):
@@ -464,7 +461,7 @@ def test_negative_update_hostname_with_empty_fact(session, setting_update):
 
     :id: e0eaab69-4926-4c1e-b111-30c51ede273e
 
-    :Steps:
+    :steps:
 
         1. Goto settings ->Discovered tab -> Hostname_facts
         2. Set empty hostname_facts (without any value)
@@ -477,14 +474,13 @@ def test_negative_update_hostname_with_empty_fact(session, setting_update):
 
     :expectedresults: Error should be raised on setting empty value for
         hostname_facts setting
-
     """
     new_hostname = ""
     property_name = setting_update.name
     with session:
         with pytest.raises(AssertionError) as context:
             session.settings.update(property_name, new_hostname)
-            assert 'can\'t be blank' in str(context.value)
+        assert 'can\'t be blank' in str(context.value)
 
 
 @pytest.mark.run_in_one_thread
@@ -495,7 +491,7 @@ def test_positive_entries_per_page(session, setting_update):
 
     :id: 009026b6-7550-40aa-9f78-5eb7f7e3800f
 
-    :Steps:
+    :steps:
         1. Navigate to Administer > Settings > General tab
         2. Update the entries per page value
         3. GoTo Monitor > Tasks Table > Pagination
@@ -512,14 +508,82 @@ def test_positive_entries_per_page(session, setting_update):
     :BZ: 1746221
 
     :CaseImportance: Medium
-
-    :CaseLevel: Acceptance
     """
     property_name = setting_update.name
     property_value = 19
     with session:
         session.settings.update(f"name={property_name}", property_value)
         page_content = session.task.read_all(widget_names="Pagination")
-        assert str(property_value) in page_content["Pagination"]["per_page"]
-        total_pages = math.ceil(int(page_content["Pagination"]["total_items"]) / property_value)
-        assert str(total_pages) == page_content["Pagination"]["pages"]
+        assert str(property_value) in page_content["Pagination"]["_items"]
+        total_pages_str = page_content["Pagination"]['_items'].split()[-2]
+        total_pages = math.ceil(int(total_pages_str.split()[-1]) / property_value)
+        assert str(total_pages) == page_content["Pagination"]['_total_pages'].split()[-1]
+
+
+@pytest.mark.tier2
+def test_positive_setting_display_fqdn_for_hosts(session, target_sat):
+    """Verify setting display_fqdn_for_hosts set as Yes/No, and FQDN is used for host's name
+    if it's set to Yes else not, according to setting set.
+
+    :id: b1a51594-43e6-49d8-918b-9bc306f3a1a4
+
+    :steps:
+        1. Navigate to Monitor -> Dashboard
+        2. Verify NewHosts table view contains host_name is w/ or w/o FQDN value
+        3. Navigate to Hosts -> All Hosts -> <host> details page
+        4. Verify host_name in breadcrumbs is w/ or w/o FQDN value
+
+    :expectedresults: FQDN is used for hostname if setting is set to Yes(default),
+        else hostname is present without FQDN.
+    """
+    host_name, domain_name = target_sat.hostname.split('.', 1)
+    default_value = target_sat.update_setting('display_fqdn_for_hosts', 'No')
+    with target_sat.ui_session() as session:
+        dashboard_hosts = session.dashboard.read('NewHosts')
+        assert host_name in [h['Host'] for h in dashboard_hosts['hosts'] if h['Host'] == host_name]
+
+        values = session.host_new.get_details(host_name, widget_names='breadcrumb')
+        assert values['breadcrumb'] == host_name
+
+        # Verify with display_fqdn_for_hosts=Yes
+        target_sat.update_setting('display_fqdn_for_hosts', default_value)
+        full_name = '.'.join((host_name, domain_name))
+        dashboard_hosts = session.dashboard.read('NewHosts')
+        assert full_name in [h['Host'] for h in dashboard_hosts['hosts'] if h['Host'] == full_name]
+
+        values = session.host_new.get_details(target_sat.hostname, widget_names='breadcrumb')
+        assert values['breadcrumb'] == full_name
+
+
+@pytest.mark.tier2
+def test_positive_show_unsupported_templates(request, target_sat, module_org, module_location):
+    """Verify setting show_unsupported_templates with new custom template
+
+    :id: e0eaab69-4926-4c1e-b111-30c51ede273z
+
+    :Steps:
+        1. Goto Settings -> Provisioning tab -> Show unsupported provisioning templates
+
+    :CaseImportance: Medium
+
+    :expectedresults: Custom template aren't searchable when set to No,
+        and are searchable when set to Yes(default)
+    """
+    pt = target_sat.api.ProvisioningTemplate(
+        name=gen_string('alpha'),
+        organization=[module_org],
+        location=[module_location],
+        template=gen_string('alpha'),
+        snippet=False,
+    ).create()
+    request.addfinalizer(pt.delete)
+    with target_sat.ui_session() as session:
+        session.organization.select(org_name=module_org.name)
+        session.location.select(loc_name=module_location.name)
+        default_value = target_sat.update_setting('show_unsupported_templates', 'No')
+        assert not session.provisioningtemplate.search(f'name={pt.name}')
+
+        # Verify with show_unsupported_templates=Yes
+        target_sat.update_setting('show_unsupported_templates', default_value)
+        template = session.provisioningtemplate.search(f'name={pt.name}')
+        assert template[0]['Name'] == pt.name

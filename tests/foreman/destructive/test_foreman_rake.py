@@ -1,16 +1,15 @@
 """Test class foreman_rake
 
-:Requirement: Other
+:Requirement: TasksPlugin
 
 :CaseAutomation: Automated
 
-:CaseLevel: System
-
-:TestType: Functional
-
 :CaseImportance: Medium
 
-:Upstream: No
+:CaseComponent: TasksPlugin
+
+:Team: Endeavour
+
 """
 import pytest
 
@@ -22,13 +21,9 @@ def test_positive_katello_reimport(target_sat):
     """Close loop bug for running katello:reimport.  Making sure
     that katello:reimport works and doesn't throw an error.
 
-    :CaseComponent: ContentManagement
-
-    :Assignee: ltran
-
     :id: b4119265-1bf0-4b0b-8b96-43f68af39708
 
-    :Steps: Have satellite up and run 'foreman-rake katello:reimport'
+    :steps: Have satellite up and run 'foreman-rake katello:reimport'
 
     :expectedresults: Successfully reimport without errors
 

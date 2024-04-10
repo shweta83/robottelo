@@ -86,16 +86,11 @@ import functools
 import json
 import os
 
+from box import Box
 import pytest
-from automation_tools.satellite6.hammer import set_hammer_config
-from fabric.api import env
 
-from robottelo.config import settings
-from robottelo.decorators.func_locker import lock_function
 from robottelo.logging import logger
-
-
-pytest_plugins = 'tests.upgrades.scenario_workers'
+from robottelo.utils.decorators.func_locker import lock_function
 
 pre_upgrade_failed_tests = []
 
@@ -159,8 +154,23 @@ def get_entity_data(scenario_name):
     """
     with open('scenario_entities') as pref:
         entity_data = json.load(pref)
-        entity_data = entity_data.get(scenario_name)
-    return entity_data
+        return entity_data.get(scenario_name)
+
+
+def get_all_entity_data():
+    """Retrieves a dictionary containing data for entities in all scenarios.
+
+    Reads the contents of the 'scenario_entities' file using the JSON format,
+    and returns the resulting dictionary of entity data.
+
+    Returns:
+    -------
+    dict:
+        A dictionary containing information on entities in all scenarios,
+        with scenario_name as keys and corresponding attribute data as values.
+    """
+    with open('scenario_entities') as pref:
+        return json.load(pref)
 
 
 def _read_test_data(test_node_id):
@@ -174,7 +184,11 @@ def _read_test_data(test_node_id):
 
 def _set_test_node_id(test_func, node_id):
     """Mark the test function with it's node_id"""
-    setattr(test_func, TEST_NODE_ID_NAME, node_id)
+    attribute_value = getattr(test_func, TEST_NODE_ID_NAME, None)
+    if attribute_value is None:
+        attribute_value = []
+    attribute_value.append(node_id)
+    setattr(test_func, TEST_NODE_ID_NAME, attribute_value)
 
 
 def _get_test_node_id(test_func):
@@ -200,33 +214,84 @@ def save_test_data(request):
 
             save_test_data({'key': some_value})
     """
-    test_node_id = _get_test_node_id(request.function)
+    test_node_id = request.node.nodeid
     return functools.partial(_save_test_data, test_node_id)
 
 
 @pytest.fixture
 def pre_upgrade_data(request):
-    """A fixture to allow restoring the saved data in pre_upgrade stage
+    """A fixture to allow restoring the saved data in the pre_upgrade stage
+        Usage:
+            @pytest.mark.post_upgrade(depend_on=test_something_pre_upgrade)
+            def test_something_post_upgrade(pre_upgrade_data):
+                # Restoring
+                pre_upgrade_key_value = pre_upgrade_data['key'] or pre_upgrade_data.key
 
-    Usage::
+            @pytest.mark.rhel_ver_list([param_1, param_2, param_3])
+            @pytest.mark.post_upgrade(depend_on=test_something_pre_upgrade)
+            def test_something_post_upgrade(pre_upgrade_data):
+                # Restoring
+                pre_upgrade_key_value = pre_upgrade_data['key'] or pre_upgrade_data.key
 
-       @pytest.mark.post_upgrade(depend_on=test_something_pre_upgrade)
-       def test_something_post_upgrade(pre_upgrade_data):
-           # restoring
-           pre_upgrade_key_value = pre_upgrade_data['key']
+    This fixture retrieves saved data from the pre_upgrade stage for use in the post_upgrade
+    stage. It looks for test functions marked with the 'post_upgrade' marker and retrieves
+    their dependencies.
+
+    The fixture provides the test data as a dictionary. Access the desired values using the
+    corresponding keys. It also parameterizes the post_upgrade test scenarios if the parameters
+    passed in the post_upgrade marker match with the pre_upgrade test scenario.
+
+    :param request: The pytest request object representing the test being executed.
+    :return: A Box object containing the test data for the pre_upgrade stage.
     """
     dependant_on_functions = []
     for marker in request.node.iter_markers(POST_UPGRADE_MARK):
         depend_on = marker.kwargs.get('depend_on')
-        if isinstance(depend_on, (list, tuple)):
+        if isinstance(depend_on, list | tuple):
             dependant_on_functions.extend(depend_on)
         elif depend_on is not None:
             dependant_on_functions.append(depend_on)
-    depend_on_node_ids = [_get_test_node_id(f) for f in dependant_on_functions]
-    data = [_read_test_data(test_node_id) for test_node_id in depend_on_node_ids]
-    if len(data) == 1:
-        data = data[0]
-    return data
+    depend_on_node_ids = []
+    for f in dependant_on_functions:
+        depend_on_node_ids.extend(_get_test_node_id(f))
+    upgrade_data = {}
+    for test_node_id in depend_on_node_ids:
+        start_index = test_node_id.find('[') + 1
+        end_index = test_node_id.find(']')
+        extracted_value = test_node_id[start_index:end_index]
+        upgrade_data[extracted_value] = _read_test_data(test_node_id)
+    if len(upgrade_data) == 1:
+        param_value = next(iter(upgrade_data.values()))
+    else:
+        param_value = upgrade_data.get(request.param)
+        if param_value is None:
+            pytest.fail(f"Invalid test parameter: {request.param}. Test data not found.")
+    return Box(param_value)
+
+
+@pytest.fixture(scope='class')
+def class_pre_upgrade_data(request):
+    """Returns a dictionary of entity data for a specific upgrade test classes.
+
+    Filters the output of get_all_entity_data() to include only entities that
+    match the test class name and the name of the test function currently being run.
+
+    Args:
+    -----
+    request (pytest.FixtureRequest): A pytest FixtureRequest object containing
+    information about the current test.
+
+    Returns:
+    -------
+    Box: A Box object containing information on entities in the upgrade test class,
+    with entity IDs as keys and corresponding attribute data as values.
+    """
+    data = {
+        key: value
+        for key, value in get_all_entity_data().items()
+        if f"{request.node.parent.name}::{request.node.name}" in key
+    }
+    return Box(data)
 
 
 def pytest_configure(config):
@@ -238,15 +303,6 @@ def pytest_configure(config):
     ]
     for marker in markers:
         config.addinivalue_line("markers", marker)
-
-
-def pytest_sessionstart(session):
-    """Do some setup for automation-tools and satellite6-upgrade"""
-    # Fabric Config setup
-    env.host_string = settings.server.hostname
-    env.user = settings.server.ssh_username
-    # Hammer Config Setup
-    set_hammer_config(user=settings.server.admin_username, password=settings.server.admin_password)
 
 
 def pytest_addoption(parser):
@@ -276,14 +332,17 @@ def __initiate(config):
     global POST_UPGRADE
     global PRE_UPGRADE_TESTS_FILE_PATH
     PRE_UPGRADE_TESTS_FILE_PATH = getattr(config.option, PRE_UPGRADE_TESTS_FILE_OPTION)
-    if not [
-        upgrade_mark
-        for upgrade_mark in (PRE_UPGRADE_MARK, POST_UPGRADE_MARK)
-        if upgrade_mark in config.option.markexpr
-    ]:
-        pytest.skip(
-            'options error: pre_upgrade or post_upgrade marks must be selected',
-            allow_module_level=True,
+    if (
+        not [
+            upgrade_mark
+            for upgrade_mark in (PRE_UPGRADE_MARK, POST_UPGRADE_MARK)
+            if upgrade_mark in config.option.markexpr
+        ]
+        and 'upgrades' in config.args[0]
+    ):  # Raise only if the `tests/upgrades` directory is selected
+        pytest.fail(
+            f'For upgrade scenarios either {PRE_UPGRADE_MARK} or {POST_UPGRADE_MARK} mark '
+            'must be provided'
         )
     if PRE_UPGRADE_MARK in config.option.markexpr:
         pre_upgrade_failed_tests = []
@@ -343,7 +402,7 @@ def pytest_collection_modifyitems(items, config):
             dependant_on_functions = []
             for marker in item.iter_markers(POST_UPGRADE_MARK):
                 depend_on = marker.kwargs.get('depend_on')
-                if isinstance(depend_on, (list, tuple)):
+                if isinstance(depend_on, list | tuple):
                     dependant_on_functions.extend(depend_on)
                 elif depend_on is not None:
                     dependant_on_functions.append(depend_on)

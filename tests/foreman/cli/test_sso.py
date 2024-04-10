@@ -4,17 +4,12 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
+:CaseComponent: Authentication
 
-:CaseComponent: LDAP
-
-:Assignee: okhatavk
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
 

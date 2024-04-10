@@ -4,23 +4,18 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Puppet
 
-:Assignee: vsedmik
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
 
-from pytest_fixtures.component.puppet import enable_capsule_cmd
-from pytest_fixtures.component.puppet import enable_satellite_cmd
+from robottelo.constants import PUPPET_CAPSULE_INSTALLER, PUPPET_COMMON_INSTALLER_OPTS
 from robottelo.hosts import Satellite
+from robottelo.utils.installer import InstallerCommand
 
 puppet_cli_commands = [
     'puppet-environment',
@@ -34,7 +29,7 @@ puppet_cli_commands = [
 
 err_msg = 'Error: No such sub-command'
 
-pytestmark = pytest.mark.destructive
+pytestmark = [pytest.mark.destructive, pytest.mark.e2e]
 
 
 def assert_puppet_status(server, expected):
@@ -89,25 +84,19 @@ def test_positive_enable_disable_logic(target_sat, capsule_configured):
     assert_puppet_status(capsule_configured, expected=False)
 
     # Try to enable puppet on Capsule and check it failed.
+    enable_capsule_cmd = InstallerCommand(
+        installer_args=PUPPET_CAPSULE_INSTALLER, installer_opts=PUPPET_COMMON_INSTALLER_OPTS
+    )
     result = capsule_configured.execute(enable_capsule_cmd.get_command(), timeout='20m')
     assert result.status == 6
     assert 'failed to load one or more features (Puppet)' in result.stdout
 
     # Enable puppet on Satellite and check it succeeded.
-    target_sat.register_to_dogfood()
-    result = target_sat.execute(enable_satellite_cmd.get_command(), timeout='20m')
-    assert result.status == 0
-    assert 'Success!' in result.stdout
-
-    # workaround for BZ#2039696
-    target_sat.execute('hammer -r')
-
+    target_sat.enable_puppet_satellite()
     assert_puppet_status(target_sat, expected=True)
 
     # Enable puppet on Capsule and check it succeeded.
-    result = capsule_configured.execute(enable_capsule_cmd.get_command(), timeout='20m')
-    assert result.status == 0
-    assert 'Success!' in result.stdout
+    capsule_configured.enable_puppet_capsule(satellite=target_sat)
     assert_puppet_status(capsule_configured, expected=True)
 
     # Try to disable puppet on Satellite and check it failed.
@@ -131,31 +120,3 @@ def test_positive_enable_disable_logic(target_sat, capsule_configured):
     )
     assert result.status == 0
     assert_puppet_status(target_sat, expected=False)
-
-
-@pytest.mark.rhel_ver_match('[^9]')
-def test_positive_install_configure(session_puppet_enabled_sat, rhel_contenthost):
-    """Test that puppet-agent can be installed from the sat-client repo
-    and configured to report back to the Satellite.
-
-    :id: 07777fbb-4f2e-4fab-ba5a-2b698f9b9f38
-
-    :setup:
-        1. Satellite with enabled puppet plugin.
-        2. Blank RHEL content host.
-
-    :steps:
-        1. Configure puppet on the content host. This creates sat-client repository,
-           installs puppet-agent, configures it, runs it to create the puppet cert,
-           signs in on the Satellite side and reruns it.
-        2. Assert that Config report was created at the Satellite for the content host.
-
-    :expectedresults:
-        1. Configuration passes without errors.
-        2. Config report is created.
-    """
-    rhel_contenthost.configure_puppet(proxy_hostname=session_puppet_enabled_sat.hostname)
-    result = session_puppet_enabled_sat.cli.ConfigReport.list(
-        {'search': f'host={rhel_contenthost.hostname},origin=Puppet'}
-    )
-    assert len(result)

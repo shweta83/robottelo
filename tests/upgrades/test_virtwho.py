@@ -4,36 +4,24 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Virt-whoConfigurePlugin
 
-:Assignee: kuhuang
-
-:TestType: Functional
+:Team: Phoenix-subscriptions
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
-from nailgun import entities
-from upgrade_tests.helpers.scenarios import create_dict
-from upgrade_tests.helpers.scenarios import get_entity_data
+import pytest
 
-from robottelo import manifests
-from robottelo.api.utils import upload_manifest
-from robottelo.cli.host import Host
-from robottelo.cli.subscription import Subscription
-from robottelo.cli.virt_who_config import VirtWhoConfig
 from robottelo.config import settings
-from robottelo.constants import DEFAULT_LOC
 from robottelo.utils.issue_handlers import is_open
-from robottelo.virtwho_utils import deploy_configure_by_command
-from robottelo.virtwho_utils import get_configure_command
-from robottelo.virtwho_utils import get_configure_file
-from robottelo.virtwho_utils import get_configure_option
+from robottelo.utils.virtwho import (
+    deploy_configure_by_command,
+    get_configure_command,
+    get_configure_file,
+    get_configure_option,
+)
 
 
 @pytest.fixture
@@ -49,11 +37,11 @@ def form_data(target_sat):
         'satellite_url': target_sat.hostname,
         'hypervisor_username': esx.hypervisor_username,
         'hypervisor_password': esx.hypervisor_password,
-        'name': 'preupgrade_virt_who',
+        'name': f'preupgrade_virt_who_{gen_string("alpha")}',
     }
 
 
-ORG_DATA = {'name': 'virtwho_upgrade_org_name'}
+ORG_DATA = {'name': f'virtwho_upgrade_{gen_string("alpha")}'}
 
 
 class TestScenarioPositiveVirtWho:
@@ -68,7 +56,9 @@ class TestScenarioPositiveVirtWho:
     """
 
     @pytest.mark.pre_upgrade
-    def test_pre_create_virt_who_configuration(self, form_data):
+    def test_pre_create_virt_who_configuration(
+        self, form_data, save_test_data, target_sat, function_entitlement_manifest
+    ):
         """Create and deploy virt-who configuration.
 
         :id: preupgrade-a36cbe89-47a2-422f-9881-0f86bea0e24e
@@ -81,22 +71,19 @@ class TestScenarioPositiveVirtWho:
             3. Report is sent to satellite.
             4. Virtual sku can be generated and attached.
         """
-        default_loc_id = entities.Location().search(query={'search': f'name="{DEFAULT_LOC}"'})[0].id
-        default_loc = entities.Location(id=default_loc_id).read()
-        org = entities.Organization(name=ORG_DATA['name']).create()
-        default_loc.organization.append(entities.Organization(id=org.id))
-        default_loc.update(['organization'])
-        with manifests.clone() as manifest:
-            upload_manifest(org.id, manifest.content)
+        org = target_sat.api.Organization(name=ORG_DATA['name']).create()
+        target_sat.api.Location(organization=[org]).create()
+        org.sca_disable()
+        target_sat.upload_manifest(org.id, function_entitlement_manifest.content)
         form_data.update({'organization_id': org.id})
-        vhd = entities.VirtWhoConfig(**form_data).create()
+        vhd = target_sat.api.VirtWhoConfig(**form_data).create()
         assert vhd.status == 'unknown'
         command = get_configure_command(vhd.id, org=org.name)
         hypervisor_name, guest_name = deploy_configure_by_command(
             command, form_data['hypervisor_type'], debug=True, org=org.label
         )
         virt_who_instance = (
-            entities.VirtWhoConfig(organization_id=org.id)
+            target_sat.api.VirtWhoConfig(organization_id=org.id)
             .search(query={'search': f'name={form_data["name"]}'})[0]
             .status
         )
@@ -106,32 +93,39 @@ class TestScenarioPositiveVirtWho:
             (guest_name, f'product_id={settings.virtwho.sku.vdc_physical} and type=STACK_DERIVED'),
         ]
         for hostname, sku in hosts:
-            host = Host.list({'search': hostname})[0]
-            subscriptions = Subscription.list({'organization-id': org.id, 'search': sku})
+            host = target_sat.cli.Host.list({'search': hostname})[0]
+            subscriptions = target_sat.cli.Subscription.list(
+                {'organization-id': org.id, 'search': sku}
+            )
             vdc_id = subscriptions[0]['id']
             if 'type=STACK_DERIVED' in sku:
                 for item in subscriptions:
                     if hypervisor_name.lower() in item['type']:
                         vdc_id = item['id']
                         break
-            entities.HostSubscription(host=host['id']).add_subscriptions(
-                data={'subscriptions': [{'id': vdc_id, 'quantity': 1}]}
+            target_sat.api.HostSubscription(host=host['id']).add_subscriptions(
+                data={'subscriptions': [{'id': vdc_id, 'quantity': 'Automatic'}]}
             )
             result = (
-                entities.Host(organization=org.id).search(query={'search': hostname})[0].read_json()
+                target_sat.api.Host(organization=org.id)
+                .search(query={'search': hostname})[0]
+                .read_json()
             )
             assert result['subscription_status_label'] == 'Fully entitled'
 
-        scenario_dict = {
-            self.__class__.__name__: {
+        save_test_data(
+            {
                 'hypervisor_name': hypervisor_name,
                 'guest_name': guest_name,
+                'org_id': org.id,
+                'org_name': org.name,
+                'org_label': org.label,
+                'name': vhd.name,
             }
-        }
-        create_dict(scenario_dict)
+        )
 
     @pytest.mark.post_upgrade(depend_on=test_pre_create_virt_who_configuration)
-    def test_post_crud_virt_who_configuration(self, form_data):
+    def test_post_crud_virt_who_configuration(self, form_data, pre_upgrade_data, target_sat):
         """Virt-who config is intact post upgrade and verify the config can be updated and deleted.
 
         :id: postupgrade-d7ae7b2b-3291-48c8-b412-cb54e444c7a4
@@ -140,40 +134,63 @@ class TestScenarioPositiveVirtWho:
             1. Post upgrade, Verify virt-who exists and has same status.
             2. Verify the connection of the guest on Content host.
             3. Verify the virt-who config-file exists.
-            4. Update virt-who config with new name.
-            5. Delete virt-who config.
+            4. Verify Report is sent to satellite.
+            5. Update virt-who config with new name.
+            6. Delete virt-who config.
 
         :expectedresults:
             1. virt-who config is intact post upgrade.
             2. the config and guest connection have the same status.
-            3. virt-who config should update and delete successfully.
+            3. Report is sent to satellite.
+            4. virt-who config should update and delete successfully.
         """
-        org = entities.Organization().search(query={'search': f'name={ORG_DATA["name"]}'})[0]
+        org_id = pre_upgrade_data.get('org_id')
+        org_name = pre_upgrade_data.get('org_name')
+        org_label = pre_upgrade_data.get('org_label')
+        name = pre_upgrade_data.get('name')
 
         # Post upgrade, Verify virt-who exists and has same status.
-        vhd = entities.VirtWhoConfig(organization_id=org.id).search(
-            query={'search': f'name={form_data["name"]}'}
+        vhd = target_sat.api.VirtWhoConfig(organization_id=org_id).search(
+            query={'search': f'name={name}'}
         )[0]
         if not is_open('BZ:1802395'):
             assert vhd.status == 'ok'
         # Verify virt-who status via CLI as we cannot check it via API now
-        vhd_cli = VirtWhoConfig.exists(search=('name', form_data['name']))
-        assert VirtWhoConfig.info({'id': vhd_cli['id']})['general-information']['status'] == 'OK'
+        vhd_cli = target_sat.cli.VirtWhoConfig.exists(search=('name', name))
+        assert (
+            target_sat.cli.VirtWhoConfig.info({'id': vhd_cli['id']})['general-information'][
+                'status'
+            ]
+            == 'OK'
+        )
 
         # Vefify the connection of the guest on Content host
-        entity_data = get_entity_data(self.__class__.__name__)
-        hypervisor_name = entity_data.get('hypervisor_name')
-        guest_name = entity_data.get('guest_name')
+        hypervisor_name = pre_upgrade_data.get('hypervisor_name')
+        guest_name = pre_upgrade_data.get('guest_name')
         hosts = [hypervisor_name, guest_name]
         for hostname in hosts:
             result = (
-                entities.Host(organization=org.id).search(query={'search': hostname})[0].read_json()
+                target_sat.api.Host(organization=org_id)
+                .search(query={'search': hostname})[0]
+                .read_json()
             )
             assert result['subscription_status_label'] == 'Fully entitled'
 
         # Verify the virt-who config-file exists.
         config_file = get_configure_file(vhd.id)
         get_configure_option('hypervisor_id', config_file),
+
+        # Verify Report is sent to satellite.
+        command = get_configure_command(vhd.id, org=org_name)
+        deploy_configure_by_command(
+            command, form_data['hypervisor_type'], debug=True, org=org_label
+        )
+        virt_who_instance = (
+            target_sat.api.VirtWhoConfig(organization_id=org_id)
+            .search(query={'search': f'name={name}'})[0]
+            .status
+        )
+        assert virt_who_instance == 'ok'
 
         # Update virt-who config
         modify_name = gen_string('alpha')
@@ -182,6 +199,6 @@ class TestScenarioPositiveVirtWho:
 
         # Delete virt-who config
         vhd.delete()
-        assert not entities.VirtWhoConfig(organization_id=org.id).search(
+        assert not target_sat.api.VirtWhoConfig(organization_id=org_id).search(
             query={'search': f'name={modify_name}'}
         )

@@ -1,20 +1,15 @@
 """Tests For Disconnected Satellite Installation
 
-:Requirement: Installer (disconnected satellite installation)
+:Requirement: Installation (disconnected satellite installation)
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
+:CaseComponent: Installation
 
-:CaseComponent: Installer
-
-:Assignee: rmynar
-
-:TestType: Functional
+:Team: Platform
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
 
@@ -33,18 +28,6 @@ def test_positive_server_installer_from_iso():
     :id: 38c08646-9f71-48d9-a9c2-66bd94c3e5bb
 
     :expectedresults: Install from ISO is successful.
-
-    :CaseAutomation: NotAutomated
-    """
-
-
-def test_positive_disconnected_util_installer():
-    """Can install  satellite disconnected utility successfully
-    via RPM
-
-    :id: b738cf2a-9c5f-4865-b134-102a4688534c
-
-    :expectedresults: Install of disconnected utility successful.
 
     :CaseAutomation: NotAutomated
     """

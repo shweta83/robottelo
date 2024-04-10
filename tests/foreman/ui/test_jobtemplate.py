@@ -4,22 +4,18 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: RemoteExecution
 
-:Assignee: pondrejk
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
+import pytest
 
 
+@pytest.mark.e2e
 @pytest.mark.tier2
 def test_positive_end_to_end(session, module_org, module_location, target_sat):
     """Perform end to end testing for Job Template component.
@@ -27,8 +23,6 @@ def test_positive_end_to_end(session, module_org, module_location, target_sat):
     :id: 2e0e31c5-e557-4151-83f9-21820c9cb1be
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: High
     """
@@ -44,9 +38,8 @@ def test_positive_end_to_end(session, module_org, module_location, target_sat):
         {
             'name': gen_string('alpha'),
             'required': True,
-            'input_type': 'Puppet parameter',
-            'input_content.puppet_class_name': gen_string('alpha'),
-            'input_content.puppet_parameter_name': gen_string('alpha'),
+            'input_type': 'Variable',
+            'input_content.variable_name': gen_string('alpha'),
             'input_content.description': gen_string('alpha'),
         },
         {
@@ -67,12 +60,12 @@ def test_positive_end_to_end(session, module_org, module_location, target_sat):
     ]
     job_foreign_input_sets = [
         {
-            'target_template': 'Run Command - SSH Default',
+            'target_template': 'Run Command - Script Default',
             'include_all': True,
             'exclude': ', '.join([gen_string('alpha') for _ in range(3)]),
         },
         {
-            'target_template': 'Run Command - SSH Default',
+            'target_template': 'Run Command - Script Default',
             'include_all': False,
             'include': ', '.join([gen_string('alpha') for _ in range(3)]),
         },
@@ -88,12 +81,11 @@ def test_positive_end_to_end(session, module_org, module_location, target_sat):
                 'template.description': template_description,
                 'job.job_category': 'Miscellaneous',
                 'job.description_format': description_format,
-                'job.provider_type': 'SSH',
+                'job.provider_type': 'Script',
                 'job.timeout': '6000',
                 'inputs': template_inputs,
                 'job.value': value,
                 'job.current_user': True,
-                'job.overridable': False,
                 'job.foreign_input_sets': job_foreign_input_sets,
                 'type.snippet': True,
                 'organizations.resources.assigned': [module_org.name, "Default Organization"],
@@ -107,11 +99,10 @@ def test_positive_end_to_end(session, module_org, module_location, target_sat):
         assert template['template']['description'] == template_description
         assert template['job']['job_category'] == job_category
         assert template['job']['description_format'] == description_format
-        assert template['job']['provider_type'] == 'SSH'
+        assert template['job']['provider_type'] == 'Script'
         assert template['job']['timeout'] == '6000'
         assert template['job']['value'] == value
         assert template['job']['current_user']
-        assert template['job']['overridable'] is False
         assert template['type']['snippet']
         assert module_org.name in template['organizations']['resources']['assigned']
         assert module_location.name in template['locations']['resources']['assigned']
@@ -120,12 +111,8 @@ def test_positive_end_to_end(session, module_org, module_location, target_sat):
         assert template['inputs'][0]['required'] == template_inputs[0]['required']
         assert template['inputs'][0]['input_type'] == template_inputs[0]['input_type']
         assert (
-            template['inputs'][0]['input_content']['puppet_class_name']
-            == template_inputs[0]['input_content.puppet_class_name']
-        )
-        assert (
-            template['inputs'][0]['input_content']['puppet_parameter_name']
-            == template_inputs[0]['input_content.puppet_parameter_name']
+            template['inputs'][0]['input_content']['variable_name']
+            == template_inputs[0]['input_content.variable_name']
         )
         assert (
             template['inputs'][0]['input_content']['description']
@@ -184,6 +171,7 @@ def test_positive_end_to_end(session, module_org, module_location, target_sat):
             == job_foreign_input_sets[1]['include']
         )
         session.organization.select(org_name="Default Organization")
+        session.location.select(loc_name="Any location")
         template_values = session.jobtemplate.read(
             template_name,
             editor_view_option='Preview',
@@ -213,32 +201,3 @@ def test_positive_end_to_end(session, module_org, module_location, target_sat):
         for name in (template_new_name, template_clone_name):
             session.jobtemplate.delete(name)
             assert not session.jobtemplate.search(name)
-
-
-@pytest.mark.skip_if_open('BZ:1705866')
-@pytest.mark.tier2
-def test_positive_clone_job_template_with_foreign_input_sets(session):
-    """Clone job template with foreign input sets
-
-    :id: 7f502750-b8a2-4223-8d3c-47be95781e34
-
-    :expectedresults: Job template can be cloned with foreign input sets and
-        new template contain foreign input sets from parent
-
-    :BZ: 1705866
-    """
-    child_name = gen_string('alpha')
-    parent_name = 'Install Group - Katello SSH Default'
-    with session:
-        parent = session.jobtemplate.read(parent_name, widget_names='job')['job'][
-            'foreign_input_sets'
-        ]
-        session.jobtemplate.clone(parent_name, {'template.name': child_name})
-        child = session.jobtemplate.read(child_name, widget_names='job')['job'][
-            'foreign_input_sets'
-        ]
-        assert len(parent) == len(child)
-        assert parent[0]['target_template'] == child[0]['target_template']
-        assert parent[0]['include_all'] == child[0]['include_all']
-        assert parent[0]['include'] == child[0]['include']
-        assert parent[0]['exclude'] == child[0]['exclude']

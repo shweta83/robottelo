@@ -4,30 +4,21 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: API
 
-:Assignee: gtalreja
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import http
 
+from nailgun import client, entities, entity_fields
 import pytest
-from nailgun import client
-from nailgun import entities
-from nailgun import entity_fields
 
-from robottelo.config import get_credentials
-from robottelo.datafactory import parametrized
-from robottelo.helpers import get_nailgun_config
+from robottelo.config import get_credentials, user_nailgun_config
 from robottelo.logging import logger
-
+from robottelo.utils.datafactory import parametrized
 
 VALID_ENTITIES = {
     entities.ActivationKey,
@@ -92,7 +83,7 @@ def _get_readable_attributes(entity):
     for field_name in list(attributes.keys()):
         if isinstance(
             entity.get_fields()[field_name],
-            (entity_fields.OneToOneField, entity_fields.OneToManyField),
+            entity_fields.OneToOneField | entity_fields.OneToManyField,
         ):
             del attributes[field_name]
 
@@ -139,7 +130,7 @@ class TestEntity:
         logger.info('test_get_status_code arg: %s', entity_cls)
         response = client.get(entity_cls().path(), auth=get_credentials(), verify=False)
         response.raise_for_status()
-        assert http.client.OK == response.status_code
+        assert response.status_code == http.client.OK
         assert 'application/json' in response.headers['content-type']
 
     @pytest.mark.tier1
@@ -160,7 +151,7 @@ class TestEntity:
         """
         logger.info('test_get_unauthorized arg: %s', entity_cls)
         response = client.get(entity_cls().path(), auth=(), verify=False)
-        assert http.client.UNAUTHORIZED == response.status_code
+        assert response.status_code == http.client.UNAUTHORIZED
 
     @pytest.mark.tier3
     @pytest.mark.parametrize(
@@ -182,7 +173,7 @@ class TestEntity:
         :BZ: 1118015
         """
         response = entity_cls().create_raw()
-        assert http.client.CREATED == response.status_code
+        assert response.status_code == http.client.CREATED
         assert 'application/json' in response.headers['content-type']
 
     @pytest.mark.tier1
@@ -202,10 +193,9 @@ class TestEntity:
         :BZ: 1122257
 
         """
-        server_cfg = get_nailgun_config()
-        server_cfg.auth = ()
+        server_cfg = user_nailgun_config()
         return_code = entity_cls(server_cfg).create_raw(create_missing=False).status_code
-        assert http.client.UNAUTHORIZED == return_code
+        assert return_code == http.client.UNAUTHORIZED
 
 
 class TestEntityId:
@@ -227,7 +217,7 @@ class TestEntityId:
         """
         entity = entity_cls(id=entity_cls().create_json()['id'])
         response = entity.read_raw()
-        assert http.client.OK == response.status_code
+        assert response.status_code == http.client.OK
         assert 'application/json' in response.headers['content-type']
 
     @pytest.mark.tier1
@@ -258,7 +248,7 @@ class TestEntityId:
             auth=get_credentials(),
             verify=False,
         )
-        assert http.client.OK == response.status_code
+        assert response.status_code == http.client.OK
         assert 'application/json' in response.headers['content-type']
 
     @pytest.mark.tier1
@@ -335,7 +325,7 @@ class TestDoubleCheck:
         payload = _get_readable_attributes(new_entity)
         entity_attrs = entity_cls(id=entity['id']).read_json()
         for key, value in payload.items():
-            assert key in entity_attrs.keys()
+            assert key in entity_attrs
             assert value == entity_attrs[key]
 
     @pytest.mark.tier1
@@ -359,7 +349,7 @@ class TestDoubleCheck:
         payload = _get_readable_attributes(entity)
         entity_attrs = entity_cls(id=entity_id).read_json()
         for key, value in payload.items():
-            assert key in entity_attrs.keys()
+            assert key in entity_attrs
             assert value == entity_attrs[key]
 
     @pytest.mark.tier1
@@ -379,7 +369,7 @@ class TestDoubleCheck:
         # Create an entity, delete it and get it.
         entity = entity_cls(id=entity_cls().create_json()['id'])
         entity.delete()
-        assert http.client.NOT_FOUND == entity.read_raw().status_code
+        assert entity.read_raw().status_code == http.client.NOT_FOUND
 
 
 class TestEntityRead:
@@ -416,7 +406,7 @@ class TestEntityRead:
         assert isinstance(entity_cls(id=entity_id).read(), entity_cls)
 
     @pytest.mark.tier1
-    def test_positive_architecture_read(self):
+    def test_positive_architecture_read(self, target_sat):
         """Create an arch that points to an OS, and read the arch.
 
         :id: e4c7babe-11d8-4f85-8382-5267a49046e9
@@ -426,14 +416,14 @@ class TestEntityRead:
 
         :CaseImportance: Critical
         """
-        os_id = entities.OperatingSystem().create_json()['id']
-        arch_id = entities.Architecture(operatingsystem=[os_id]).create_json()['id']
-        architecture = entities.Architecture(id=arch_id).read()
+        os_id = target_sat.api.OperatingSystem().create_json()['id']
+        arch_id = target_sat.api.Architecture(operatingsystem=[os_id]).create_json()['id']
+        architecture = target_sat.api.Architecture(id=arch_id).read()
         assert len(architecture.operatingsystem) == 1
         assert architecture.operatingsystem[0].id == os_id
 
     @pytest.mark.tier1
-    def test_positive_syncplan_read(self):
+    def test_positive_syncplan_read(self, target_sat):
         """Create a SyncPlan and read it back using
         ``nailgun.entity_mixins.EntityReadMixin.read``.
 
@@ -444,14 +434,14 @@ class TestEntityRead:
 
         :CaseImportance: Critical
         """
-        org_id = entities.Organization().create_json()['id']
-        syncplan_id = entities.SyncPlan(organization=org_id).create_json()['id']
+        org_id = target_sat.api.Organization().create_json()['id']
+        syncplan_id = target_sat.api.SyncPlan(organization=org_id).create_json()['id']
         assert isinstance(
-            entities.SyncPlan(organization=org_id, id=syncplan_id).read(), entities.SyncPlan
+            target_sat.api.SyncPlan(organization=org_id, id=syncplan_id).read(), entities.SyncPlan
         )
 
     @pytest.mark.tier1
-    def test_positive_osparameter_read(self):
+    def test_positive_osparameter_read(self, target_sat):
         """Create an OperatingSystemParameter and get it using
         ``nailgun.entity_mixins.EntityReadMixin.read``.
 
@@ -462,15 +452,15 @@ class TestEntityRead:
 
         :CaseImportance: Critical
         """
-        os_id = entities.OperatingSystem().create_json()['id']
-        osp_id = entities.OperatingSystemParameter(operatingsystem=os_id).create_json()['id']
+        os_id = target_sat.api.OperatingSystem().create_json()['id']
+        osp_id = target_sat.api.OperatingSystemParameter(operatingsystem=os_id).create_json()['id']
         assert isinstance(
-            entities.OperatingSystemParameter(id=osp_id, operatingsystem=os_id).read(),
-            entities.OperatingSystemParameter,
+            target_sat.api.OperatingSystemParameter(id=osp_id, operatingsystem=os_id).read(),
+            target_sat.api.OperatingSystemParameter,
         )
 
     @pytest.mark.tier1
-    def test_positive_permission_read(self):
+    def test_positive_permission_read(self, target_sat):
         """Create an Permission entity and get it using
         ``nailgun.entity_mixins.EntityReadMixin.read``.
 
@@ -481,12 +471,12 @@ class TestEntityRead:
 
         :CaseImportance: Critical
         """
-        perm = entities.Permission().search(query={'per_page': '1'})[0]
+        perm = target_sat.api.Permission().search(query={'per_page': '1'})[0]
         assert perm.name
         assert perm.resource_type
 
     @pytest.mark.tier1
-    def test_positive_media_read(self):
+    def test_positive_media_read(self, target_sat):
         """Create a media pointing at an OS and read the media.
 
         :id: 67b656fe-9302-457a-b544-3addb11c85e0
@@ -495,8 +485,8 @@ class TestEntityRead:
 
         :CaseImportance: Critical
         """
-        os_id = entities.OperatingSystem().create_json()['id']
-        media_id = entities.Media(operatingsystem=[os_id]).create_json()['id']
-        media = entities.Media(id=media_id).read()
+        os_id = target_sat.api.OperatingSystem().create_json()['id']
+        media_id = target_sat.api.Media(operatingsystem=[os_id]).create_json()['id']
+        media = target_sat.api.Media(id=media_id).read()
         assert len(media.operatingsystem) == 1
         assert media.operatingsystem[0].id == os_id

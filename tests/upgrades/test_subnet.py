@@ -4,17 +4,12 @@
 
 :CaseAutomation: NotAutomated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: Networking
 
-:Assignee: rdrazny
-
-:TestType: Functional
+:Team: Rocket
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
 

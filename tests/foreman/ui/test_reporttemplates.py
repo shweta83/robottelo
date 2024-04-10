@@ -4,77 +4,68 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Integration
-
 :CaseComponent: Reporting
 
-:Assignee: lhellebr
-
-:TestType: Functional
+:team: Phoenix-subscriptions
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import csv
 import json
 import os
-from pathlib import Path
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
+from lxml import etree
 import pytest
 import yaml
-from lxml import etree
-from nailgun import entities
 
-from robottelo import manifests
-from robottelo.api.utils import enable_rhrepo_and_fetchid
-from robottelo.api.utils import promote
-from robottelo.api.utils import upload_manifest
-from robottelo.config import robottelo_tmp_dir
-from robottelo.constants import DEFAULT_SUBSCRIPTION_NAME
-from robottelo.constants import PRDS
-from robottelo.constants import REPOS
-from robottelo.constants import REPOSET
-from robottelo.datafactory import gen_string
-from robottelo.ui.utils import create_fake_host
+from robottelo.config import robottelo_tmp_dir, settings
+from robottelo.constants import (
+    DEFAULT_SUBSCRIPTION_NAME,
+    FAKE_0_CUSTOM_PACKAGE_NAME,
+    FAKE_1_CUSTOM_PACKAGE,
+    PRDS,
+    REPOS,
+    REPOSET,
+)
+from robottelo.utils.datafactory import gen_string
 
 
 @pytest.fixture(scope='module')
-def setup_content(module_org):
-    with manifests.clone() as manifest:
-        upload_manifest(module_org.id, manifest.content)
-    rh_repo_id = enable_rhrepo_and_fetchid(
+def setup_content(module_entitlement_manifest_org, module_target_sat):
+    org = module_entitlement_manifest_org
+    rh_repo_id = module_target_sat.api_factory.enable_rhrepo_and_fetchid(
         basearch='x86_64',
-        org_id=module_org.id,
+        org_id=org.id,
         product=PRDS['rhel'],
         repo=REPOS['rhst7']['name'],
         reposet=REPOSET['rhst7'],
         releasever=None,
     )
-    rh_repo = entities.Repository(id=rh_repo_id).read()
+    rh_repo = module_target_sat.api.Repository(id=rh_repo_id).read()
     rh_repo.sync()
-    custom_product = entities.Product(organization=module_org).create()
-    custom_repo = entities.Repository(
+    custom_product = module_target_sat.api.Product(organization=org).create()
+    custom_repo = module_target_sat.api.Repository(
         name=gen_string('alphanumeric').upper(), product=custom_product
     ).create()
     custom_repo.sync()
-    lce = entities.LifecycleEnvironment(organization=module_org).create()
-    cv = entities.ContentView(
-        organization=module_org,
+    lce = module_target_sat.api.LifecycleEnvironment(organization=org).create()
+    cv = module_target_sat.api.ContentView(
+        organization=org,
         repository=[rh_repo_id, custom_repo.id],
     ).create()
     cv.publish()
     cvv = cv.read().version[0].read()
-    promote(cvv, lce.id)
-    ak = entities.ActivationKey(
-        content_view=cv, organization=module_org, environment=lce, auto_attach=True
+    cvv.promote(data={'environment_ids': lce.id})
+    ak = module_target_sat.api.ActivationKey(
+        content_view=cv, organization=org, environment=lce, auto_attach=True
     ).create()
-    subscription = entities.Subscription(organization=module_org).search(
+    subscription = module_target_sat.api.Subscription(organization=org).search(
         query={'search': f'name="{DEFAULT_SUBSCRIPTION_NAME}"'}
     )[0]
     ak.add_subscriptions(data={'quantity': 1, 'subscription_id': subscription.id})
-    return module_org, ak
+    return org, ak, cv, lce
 
 
 @pytest.mark.tier3
@@ -147,8 +138,6 @@ def test_positive_end_to_end(session, module_org, module_location):
     :id: b44d4cc8-a78e-47cf-9993-0bb871ac2c96
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
 
     :CaseImportance: Critical
     """
@@ -240,7 +229,7 @@ def test_positive_end_to_end(session, module_org, module_location):
 
 @pytest.mark.upgrade
 @pytest.mark.tier2
-def test_positive_generate_registered_hosts_report(session, module_org, module_location):
+def test_positive_generate_registered_hosts_report(target_sat, module_org, module_location):
     """Use provided Host - Registered Content Hosts report for testing
 
     :id: b44d4cd8-a78e-47cf-9993-0bb871ac2c96
@@ -248,23 +237,26 @@ def test_positive_generate_registered_hosts_report(session, module_org, module_l
     :expectedresults: The Host - Registered Content Hosts report is generated (with host filter)
                       and it contains created host with correct data
 
-    :CaseLevel: Integration
-
     :CaseImportance: High
     """
     # generate Host Status report
     os_name = 'comma,' + gen_string('alpha')
-    os = entities.OperatingSystem(name=os_name).create()
+    os = target_sat.api.OperatingSystem(name=os_name).create()
     host_cnt = 3
     host_templates = [
-        entities.Host(organization=module_org, location=module_location, operatingsystem=os)
+        target_sat.api.Host(organization=module_org, location=module_location, operatingsystem=os)
         for i in range(host_cnt)
     ]
     for host_template in host_templates:
         host_template.create_missing()
-    with session:
+    with target_sat.ui_session() as session:
+        session.organization.select(module_org.name)
+        session.location.select(module_location.name)
         # create multiple hosts to test filtering
-        host_names = [create_fake_host(session, host_template) for host_template in host_templates]
+        host_names = [
+            target_sat.ui_factory(session).create_fake_host(host_template)
+            for host_template in host_templates
+        ]
         host_name = host_names[1]  # pick some that is not first and is not last
         file_path = session.reporttemplate.generate(
             'Host - Registered Content Hosts', values={'hosts_filter': host_name}
@@ -290,15 +282,13 @@ def test_positive_generate_registered_hosts_report(session, module_org, module_l
 @pytest.mark.upgrade
 @pytest.mark.tier2
 def test_positive_generate_subscriptions_report_json(
-    session, module_org, module_location, setup_content
+    session, module_org, setup_content, module_target_sat
 ):
     """Use provided Subscriptions report, generate JSON
 
     :id: b44d4cd8-a88e-47cf-9993-0bb871ac2c96
 
     :expectedresults: The Subscriptions report is generated in JSON
-
-    :CaseLevel: Integration
 
     :CaseImportance: Medium
     """
@@ -309,7 +299,7 @@ def test_positive_generate_subscriptions_report_json(
         )
     with open(file_path) as json_file:
         data = json.load(json_file)
-    subscription_cnt = len(entities.Subscription(organization=module_org).search())
+    subscription_cnt = len(module_target_sat.api.Subscription(organization=module_org).search())
     assert subscription_cnt > 0
     assert len(data) >= subscription_cnt
     keys_expected = [
@@ -386,7 +376,7 @@ def test_positive_autocomplete(session):
 
 @pytest.mark.tier2
 def test_positive_schedule_generation_and_get_mail(
-    session, module_manifest_org, module_location, target_sat
+    session, module_entitlement_manifest_org, module_location, target_sat
 ):
     """Schedule generating a report. Request the result be sent via e-mail.
 
@@ -404,6 +394,8 @@ def test_positive_schedule_generation_and_get_mail(
                       The result is compressed.
     :CaseImportance: High
     """
+    # make sure postfix daemon is running
+    target_sat.execute('systemctl start postfix')
     # generate Subscriptions report
     with session:
         session.reporttemplate.schedule(
@@ -439,7 +431,9 @@ def test_positive_schedule_generation_and_get_mail(
     target_sat.get(remote_path=str(gzip_path), local_path=str(local_gzip_file))
     assert os.system(f'gunzip {local_gzip_file}') == 0
     data = json.loads(local_file.read_text())
-    subscription_search = target_sat.api.Subscription(organization=module_manifest_org).search()
+    subscription_search = target_sat.api.Subscription(
+        organization=module_entitlement_manifest_org
+    ).search()
     assert len(data) >= len(subscription_search) > 0
     keys_expected = [
         'Account number',
@@ -490,6 +484,7 @@ def test_negative_nonauthor_of_report_cant_download_it(session):
         4. Wait for dynflow
         5. As a different user, try to download the generated report
     :expectedresults: Report can't be downloaded. Error.
+
     :CaseImportance: High
     """
 
@@ -565,3 +560,55 @@ def test_positive_gen_entitlements_reports_multiple_formats(
             tree_result = etree.tostring(tree.getroot(), pretty_print=True, method='html').decode()
         assert client.hostname in tree_result
         assert DEFAULT_SUBSCRIPTION_NAME in tree_result
+
+
+@pytest.mark.rhel_ver_list([7, 8, 9])
+@pytest.mark.tier3
+def test_positive_generate_all_installed_packages_report(
+    session, setup_content, rhel_contenthost, target_sat
+):
+    """Generate an report using the 'Host - All Installed Packages' Report template
+
+    :id: 63ab3246-0fc5-48b3-ba56-7becfa0c5a7b
+
+    :setup: Installed Satellite with Organization, Activation key,
+            Content View, Content Host, and custom product with installed packages
+
+    :steps:
+        1. Monitor -> Report Templates
+        2. Host - All Installed Packages -> Generate
+        3. Select Date, Output format, and Hosts filter
+
+    :expectedresults: A report is generated containing all installed package
+            information for a host
+
+    :BZ: 1826648
+
+    :customerscenario: true
+    """
+    org, ak, cv, lce = setup_content
+    target_sat.cli_factory.setup_org_for_a_custom_repo(
+        {
+            'url': settings.repos.yum_6.url,
+            'organization-id': org.id,
+            'content-view-id': cv.id,
+            'lifecycle-environment-id': lce.id,
+            'activationkey-id': ak.id,
+        }
+    )
+    client = rhel_contenthost
+    client.install_katello_ca(target_sat)
+    client.register_contenthost(org.label, ak.name)
+    assert client.subscribed
+    client.execute(f'yum -y install {FAKE_0_CUSTOM_PACKAGE_NAME} {FAKE_1_CUSTOM_PACKAGE}')
+    with session:
+        session.location.select('Default Location')
+        result_html = session.reporttemplate.generate(
+            'Host - All Installed Packages', values={'output_format': 'HTML'}
+        )
+    with open(result_html) as html_file:
+        parser = etree.HTMLParser()
+        tree = etree.parse(html_file, parser)
+        tree_result = etree.tostring(tree.getroot(), pretty_print=True, method='html').decode()
+    assert client.hostname in tree_result
+    assert FAKE_1_CUSTOM_PACKAGE in tree_result

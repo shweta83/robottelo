@@ -4,20 +4,15 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: HostGroup
 
-:Assignee: okhatavk
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
-import pytest
 from fauxfactory import gen_string
+import pytest
 
 
 class TestHostgroup:

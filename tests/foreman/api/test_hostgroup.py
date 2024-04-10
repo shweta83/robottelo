@@ -4,38 +4,33 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: HostGroup
 
-:Assignee: okhatavk
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
 from random import randint
 
-import pytest
 from fauxfactory import gen_string
-from nailgun import client
-from nailgun import entities
-from nailgun import entity_fields
+from nailgun import client, entity_fields
+import pytest
 from requests.exceptions import HTTPError
 
-from robottelo.api.utils import one_to_one_names
-from robottelo.api.utils import promote
 from robottelo.config import get_credentials
-from robottelo.datafactory import invalid_values_list
-from robottelo.datafactory import parametrized
-from robottelo.datafactory import valid_hostgroups_list
+from robottelo.utils.datafactory import (
+    invalid_values_list,
+    parametrized,
+    valid_hostgroups_list,
+)
 
 
 @pytest.fixture
-def hostgroup(module_org, module_location):
-    return entities.HostGroup(location=[module_location], organization=[module_org]).create()
+def hostgroup(module_org, module_location, module_target_sat):
+    return module_target_sat.api.HostGroup(
+        location=[module_location], organization=[module_org]
+    ).create()
 
 
 @pytest.fixture
@@ -62,7 +57,6 @@ class TestHostGroup:
 
         :BZ: 1107708, 1222118, 1487586
 
-        :CaseLevel: System
         """
         # Creating entities like organization, content view and lifecycle_env
         # with not utf-8 names for easier interaction with puppet environment
@@ -82,7 +76,7 @@ class TestHostGroup:
         lc_env = session_puppet_enabled_sat.api.LifecycleEnvironment(
             name=gen_string('alpha'), organization=org
         ).create()
-        promote(content_view.version[0], lc_env.id)
+        content_view.version[0].promote(data={'environment_ids': lc_env.id, 'force': False})
         content_view = content_view.read()
         assert len(content_view.version) == 1
 
@@ -160,7 +154,7 @@ class TestHostGroup:
 
     @pytest.mark.upgrade
     @pytest.mark.tier3
-    def test_rebuild_config(self, module_org, module_location, hostgroup):
+    def test_rebuild_config(self, module_org, module_location, hostgroup, module_target_sat):
         """'Rebuild orchestration config' of an existing host group
 
         :id: 58bf7015-18fc-4d25-9b64-7f2dd6dde425
@@ -169,14 +163,13 @@ class TestHostGroup:
 
         :CaseImportance: Medium
 
-        :CaseLevel: System
         """
-        lce = entities.LifecycleEnvironment(organization=module_org).create()
-        content_view = entities.ContentView(organization=module_org).create()
+        lce = module_target_sat.api.LifecycleEnvironment(organization=module_org).create()
+        content_view = module_target_sat.api.ContentView(organization=module_org).create()
         content_view.publish()
         content_view = content_view.read()
-        promote(content_view.version[0], environment_id=lce.id)
-        entities.Host(
+        content_view.version[0].promote(data={'environment_ids': lce.id, 'force': False})
+        module_target_sat.api.Host(
             hostgroup=hostgroup,
             location=module_location,
             organization=module_org,
@@ -195,7 +188,7 @@ class TestHostGroup:
 
     @pytest.mark.tier1
     @pytest.mark.parametrize('name', **parametrized(valid_hostgroups_list()))
-    def test_positive_create_with_name(self, name, module_org, module_location):
+    def test_positive_create_with_name(self, name, module_org, module_location, module_target_sat):
         """Create a hostgroup with different names
 
         :id: fd5d353c-fd0c-4752-8a83-8f399b4c3416
@@ -206,13 +199,13 @@ class TestHostGroup:
 
         :CaseImportance: Critical
         """
-        hostgroup = entities.HostGroup(
+        hostgroup = module_target_sat.api.HostGroup(
             location=[module_location], name=name, organization=[module_org]
         ).create()
         assert name == hostgroup.name
 
     @pytest.mark.tier1
-    def test_positive_clone(self, hostgroup):
+    def test_positive_clone(self, hostgroup, target_sat):
         """Create a hostgroup by cloning an existing one
 
         :id: 44ac8b3b-9cb0-4a9e-ad9b-2c67b2411922
@@ -222,7 +215,7 @@ class TestHostGroup:
         :CaseImportance: Critical
         """
         hostgroup_cloned_name = gen_string('alpha')
-        hostgroup_cloned = entities.HostGroup(id=hostgroup.id).clone(
+        hostgroup_cloned = target_sat.api.HostGroup(id=hostgroup.id).clone(
             data={'name': hostgroup_cloned_name}
         )
         hostgroup_origin = hostgroup.read_json()
@@ -247,8 +240,6 @@ class TestHostGroup:
 
         :expectedresults: A hostgroup is created with expected properties,
             updated and deleted
-
-        :CaseLevel: Integration
 
         :CaseImportance: High
         """
@@ -283,7 +274,7 @@ class TestHostGroup:
         lce = session_puppet_enabled_sat.api.LifecycleEnvironment(
             organization=module_puppet_org
         ).create()
-        promote(content_view.version[0], lce.id)
+        content_view.version[0].promote(data={'environment_ids': lce.id, 'force': False})
         hostgroup = session_puppet_enabled_sat.api.HostGroup(
             architecture=arch,
             content_source=proxy,
@@ -342,7 +333,7 @@ class TestHostGroup:
         new_media = session_puppet_enabled_sat.api.Media(
             operatingsystem=[os], location=[new_loc], organization=[new_org]
         ).create()
-        promote(new_cv.version[0], new_lce.id)
+        new_cv.version[0].promote(data={'environment_ids': new_lce.id, 'force': False})
 
         # update itself
         hostgroup.organization = [new_org]
@@ -402,22 +393,21 @@ class TestHostGroup:
 
         :expectedresults: A hostgroup is created with expected realm assigned
 
-        :CaseLevel: Integration
         """
-        realm = entities.Realm(
+        realm = target_sat.api.Realm(
             location=[module_location],
             organization=[module_org],
-            realm_proxy=entities.SmartProxy().search(
+            realm_proxy=target_sat.api.SmartProxy().search(
                 query={'search': f'url = {target_sat.url}:9090'}
             )[0],
         ).create()
-        hostgroup = entities.HostGroup(
+        hostgroup = target_sat.api.HostGroup(
             location=[module_location], organization=[module_org], realm=realm
         ).create()
         assert hostgroup.realm.read().name == realm.name
 
     @pytest.mark.tier2
-    def test_positive_create_with_locs(self, module_org):
+    def test_positive_create_with_locs(self, module_org, module_target_sat):
         """Create a hostgroup with multiple locations specified
 
         :id: 0c2ee2ff-9e7a-4931-8cea-f4eecbd8c4c0
@@ -427,14 +417,18 @@ class TestHostGroup:
         :expectedresults: A hostgroup is created with expected multiple
             locations assigned
 
-        :CaseLevel: Integration
         """
-        locs = [entities.Location(organization=[module_org]).create() for _ in range(randint(3, 5))]
-        hostgroup = entities.HostGroup(location=locs, organization=[module_org]).create()
+        locs = [
+            module_target_sat.api.Location(organization=[module_org]).create()
+            for _ in range(randint(3, 5))
+        ]
+        hostgroup = module_target_sat.api.HostGroup(
+            location=locs, organization=[module_org]
+        ).create()
         assert {loc.name for loc in locs} == {loc.read().name for loc in hostgroup.location}
 
     @pytest.mark.tier2
-    def test_positive_create_with_orgs(self):
+    def test_positive_create_with_orgs(self, target_sat):
         """Create a hostgroup with multiple organizations specified
 
         :id: 09642238-cf0d-469a-a0b5-c167b1b8edf5
@@ -444,10 +438,9 @@ class TestHostGroup:
         :expectedresults: A hostgroup is created with expected multiple
             organizations assigned
 
-        :CaseLevel: Integration
         """
-        orgs = [entities.Organization().create() for _ in range(randint(3, 5))]
-        hostgroup = entities.HostGroup(organization=orgs).create()
+        orgs = [target_sat.api.Organization().create() for _ in range(randint(3, 5))]
+        hostgroup = target_sat.api.HostGroup(organization=orgs).create()
         assert {org.name for org in orgs}, {org.read().name for org in hostgroup.organization}
 
     @pytest.mark.tier1
@@ -477,7 +470,6 @@ class TestHostGroup:
 
         :CaseImportance: Medium
 
-        :CaseLevel: Integration
         """
         new_proxy = session_puppet_enabled_sat.api.SmartProxy().search(
             query={'search': f'url = {session_puppet_enabled_sat.url}:9090'}
@@ -497,22 +489,21 @@ class TestHostGroup:
 
         :expectedresults: A hostgroup is updated with expected realm
 
-        :CaseLevel: Integration
         """
-        realm = entities.Realm(
+        realm = target_sat.api.Realm(
             location=[module_location],
             organization=[module_org],
-            realm_proxy=entities.SmartProxy().search(
+            realm_proxy=target_sat.api.SmartProxy().search(
                 query={'search': f'url = {target_sat.url}:9090'}
             )[0],
         ).create()
-        hostgroup = entities.HostGroup(
+        hostgroup = target_sat.api.HostGroup(
             location=[module_location], organization=[module_org], realm=realm
         ).create()
-        new_realm = entities.Realm(
+        new_realm = target_sat.api.Realm(
             location=[module_location],
             organization=[module_org],
-            realm_proxy=entities.SmartProxy().search(
+            realm_proxy=target_sat.api.SmartProxy().search(
                 query={'search': f'url = {target_sat.url}:9090'}
             )[0],
         ).create()
@@ -530,7 +521,6 @@ class TestHostGroup:
 
         :expectedresults: A hostgroup is updated with expected puppet proxy
 
-        :CaseLevel: Integration
         """
         new_proxy = session_puppet_enabled_sat.api.SmartProxy().search(
             query={'search': f'url = {session_puppet_enabled_sat.url}:9090'}
@@ -549,9 +539,8 @@ class TestHostGroup:
 
         :expectedresults: A hostgroup is updated with expected puppet proxy
 
-        :CaseLevel: Integration
         """
-        new_content_source = entities.SmartProxy().search(
+        new_content_source = target_sat.api.SmartProxy().search(
             query={'search': f'url = {target_sat.url}:9090'}
         )[0]
         hostgroup.content_source = new_content_source
@@ -559,7 +548,7 @@ class TestHostGroup:
         assert hostgroup.content_source.read().name == new_content_source.name
 
     @pytest.mark.tier2
-    def test_positive_update_locs(self, module_org, hostgroup):
+    def test_positive_update_locs(self, module_org, hostgroup, module_target_sat):
         """Update a hostgroup with new multiple locations
 
         :id: b045f7e8-d7c0-428b-a29c-8d54e53742e2
@@ -568,17 +557,17 @@ class TestHostGroup:
 
         :expectedresults: A hostgroup is updated with expected locations
 
-        :CaseLevel: Integration
         """
         new_locs = [
-            entities.Location(organization=[module_org]).create() for _ in range(randint(3, 5))
+            module_target_sat.api.Location(organization=[module_org]).create()
+            for _ in range(randint(3, 5))
         ]
         hostgroup.location = new_locs
         hostgroup = hostgroup.update(['location'])
         assert {loc.name for loc in new_locs}, {loc.read().name for loc in hostgroup.location}
 
     @pytest.mark.tier2
-    def test_positive_update_orgs(self, hostgroup):
+    def test_positive_update_orgs(self, hostgroup, target_sat):
         """Update a hostgroup with new multiple organizations
 
         :id: 5f6bd4f9-4bd6-4d7e-9a91-de824299020e
@@ -587,16 +576,15 @@ class TestHostGroup:
 
         :expectedresults: A hostgroup is updated with expected organizations
 
-        :CaseLevel: Integration
         """
-        new_orgs = [entities.Organization().create() for _ in range(randint(3, 5))]
+        new_orgs = [target_sat.api.Organization().create() for _ in range(randint(3, 5))]
         hostgroup.organization = new_orgs
         hostgroup = hostgroup.update(['organization'])
         assert {org.name for org in new_orgs} == {org.read().name for org in hostgroup.organization}
 
     @pytest.mark.tier1
     @pytest.mark.parametrize('name', **parametrized(invalid_values_list()))
-    def test_negative_create_with_name(self, name, module_org, module_location):
+    def test_negative_create_with_name(self, name, module_org, module_location, module_target_sat):
         """Attempt to create a hostgroup with invalid names
 
         :id: 3f5aa17a-8db9-4fe9-b309-b8ec5e739da1
@@ -608,7 +596,7 @@ class TestHostGroup:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.HostGroup(
+            module_target_sat.api.HostGroup(
                 location=[module_location], name=name, organization=[module_org]
             ).create()
 
@@ -632,7 +620,7 @@ class TestHostGroup:
         assert hostgroup.read().name == original_name
 
     @pytest.mark.tier2
-    def test_positive_create_with_group_parameters(self, module_org):
+    def test_positive_create_with_group_parameters(self, module_org, module_target_sat):
         """Create a hostgroup with 'group parameters' specified
 
         :id: 0959e2a2-d635-482b-9b2e-d33990d6f0dc
@@ -643,12 +631,10 @@ class TestHostGroup:
 
         :customerscenario: true
 
-        :CaseLevel: Integration
-
         :BZ: 1710853
         """
         group_params = {'name': gen_string('alpha'), 'value': gen_string('alpha')}
-        hostgroup = entities.HostGroup(
+        hostgroup = module_target_sat.api.HostGroup(
             organization=[module_org], group_parameters_attributes=[group_params]
         ).create()
         assert group_params['name'] == hostgroup.group_parameters_attributes[0]['name']
@@ -665,7 +651,7 @@ class TestHostGroupMissingAttr:
     """
 
     @pytest.mark.tier2
-    def test_positive_get_content_source(self, hostgroup):
+    def test_positive_get_content_source(self, hostgroup, module_target_sat):
         """Read a host group. Inspect the server's response.
 
         :id: 9d42f47a-2f08-45ad-97d0-de94f0f1de2f
@@ -675,16 +661,15 @@ class TestHostGroupMissingAttr:
         :expectedresults: The response contains both values for the
             ``content_source`` field.
 
-        :CaseLevel: Integration
         """
-        names = one_to_one_names('content_source')
+        names = module_target_sat.api_factory.one_to_one_names('content_source')
         hostgroup_attrs = set(hostgroup.read_json().keys())
         assert names.issubset(
             hostgroup_attrs
         ), f'{names.difference(hostgroup_attrs)} not found in {hostgroup_attrs}'
 
     @pytest.mark.tier2
-    def test_positive_get_cv(self, hostgroup):
+    def test_positive_get_cv(self, hostgroup, module_target_sat):
         """Read a host group. Inspect the server's response.
 
         :id: 7d36f33e-f161-4d2a-9ee4-8eb949ed4cbf
@@ -694,16 +679,15 @@ class TestHostGroupMissingAttr:
         :expectedresults: The response contains both values for the
             ``content_view`` field.
 
-        :CaseLevel: Integration
         """
-        names = one_to_one_names('content_view')
+        names = module_target_sat.api_factory.one_to_one_names('content_view')
         hostgroup_attrs = set(hostgroup.read_json().keys())
         assert names.issubset(
             hostgroup_attrs
         ), f'{names.difference(hostgroup_attrs)} not found in {hostgroup_attrs}'
 
     @pytest.mark.tier2
-    def test_positive_get_lce(self, hostgroup):
+    def test_positive_get_lce(self, hostgroup, module_target_sat):
         """Read a host group. Inspect the server's response.
 
         :id: efa17f59-47f9-40c6-821d-c348c4d852ff
@@ -713,9 +697,8 @@ class TestHostGroupMissingAttr:
         :expectedresults: The response contains both values for the
             ``lifecycle_environment`` field.
 
-        :CaseLevel: Integration
         """
-        names = one_to_one_names('lifecycle_environment')
+        names = module_target_sat.api_factory.one_to_one_names('lifecycle_environment')
         hostgroup_attrs = set(hostgroup.read_json().keys())
         assert names.issubset(
             hostgroup_attrs
@@ -734,7 +717,6 @@ class TestHostGroupMissingAttr:
 
         :BZ: 1371900
 
-        :CaseLevel: Integration
         """
         proxy = session_puppet_enabled_sat.api.SmartProxy().search(
             query={'search': f'url = {session_puppet_enabled_sat.url}:9090'}
@@ -756,7 +738,6 @@ class TestHostGroupMissingAttr:
 
         :BZ: 1371900
 
-        :CaseLevel: Integration
         """
         proxy = session_puppet_enabled_sat.api.SmartProxy().search(
             query={'search': f'url = {session_puppet_enabled_sat.url}:9090'}

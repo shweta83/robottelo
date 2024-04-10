@@ -4,50 +4,47 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: ContainerManagement-Content
 
-:Assignee: addubey
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
-from nailgun import entities
 
-from robottelo.constants import CONTAINER_REGISTRY_HUB
-from robottelo.constants import CONTAINER_UPSTREAM_NAME
-from robottelo.constants import ENVIRONMENT
-from robottelo.constants import REPO_TYPE
-
-
-@pytest.fixture(scope="module")
-def module_org():
-    return entities.Organization().create()
+from robottelo.constants import (
+    CONTAINER_REGISTRY_HUB,
+    CONTAINER_UPSTREAM_NAME,
+    DEFAULT_CV,
+    ENVIRONMENT,
+    REPO_TYPE,
+)
+from robottelo.utils.issue_handlers import is_open
 
 
 @pytest.fixture(scope="module")
-def module_product(module_org):
-    return entities.Product(organization=module_org).create()
+def module_org(module_target_sat):
+    return module_target_sat.api.Organization().create()
 
 
 @pytest.fixture(scope="module")
-def module_repository(module_product):
-    repo = entities.Repository(
+def module_product(module_org, module_target_sat):
+    return module_target_sat.api.Product(organization=module_org).create()
+
+
+@pytest.fixture(scope="module")
+def module_repository(module_product, module_target_sat):
+    repo = module_target_sat.api.Repository(
         content_type=REPO_TYPE['docker'],
         docker_upstream_name=CONTAINER_UPSTREAM_NAME,
         product=module_product,
         url=CONTAINER_REGISTRY_HUB,
     ).create()
-    repo.sync()
+    repo.sync(timeout=1440)
     return repo
 
 
-@pytest.mark.skip_if_open("BZ:2009069")
 @pytest.mark.tier2
 def test_positive_search(session, module_org, module_product, module_repository):
     """Search for a docker image tag and reads details of it
@@ -57,14 +54,21 @@ def test_positive_search(session, module_org, module_product, module_repository)
     :expectedresults: The docker image tag can be searched and found,
         details are read
 
-    :CaseLevel: Integration
+    :BZ: 2009069, 2242515
     """
     with session:
         session.organization.select(org_name=module_org.name)
         search = session.containerimagetag.search('latest')
-        assert module_product.name in [i['Product Name'] for i in search]
-        assert module_repository.name in [i['Repository Name'] for i in search]
+        if not is_open('BZ:2242515'):
+            assert module_product.name in [i['Product Name'] for i in search]
         values = session.containerimagetag.read('latest')
-        assert module_product.name == values['details']['product']
-        assert module_repository.name == values['details']['repository']
+        if not is_open('BZ:2242515'):
+            assert module_product.name == values['details']['product']
         assert values['lce']['table'][0]['Environment'] == ENVIRONMENT
+        repo_line = next(
+            (item for item in values['repos']['table'] if item['Name'] == module_repository.name),
+            None,
+        )
+        assert module_product.name == repo_line['Product']
+        assert repo_line['Content View'] == DEFAULT_CV
+        assert 'Success' in repo_line['Last Sync']

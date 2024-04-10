@@ -1,23 +1,19 @@
 from pathlib import PurePath
 
-import pytest
 from fauxfactory import gen_string
 from nailgun import entities
+import pytest
 
-from robottelo.cli.factory import make_scapcontent
-from robottelo.config import robottelo_tmp_dir
-from robottelo.config import settings
-from robottelo.constants import OSCAP_PROFILE
-from robottelo.constants import OSCAP_TAILORING_FILE
-from robottelo.helpers import get_data_file
+from robottelo.config import robottelo_tmp_dir, settings
+from robottelo.constants import OSCAP_PROFILE, OSCAP_TAILORING_FILE, DataFile
 
 
 @pytest.fixture(scope="session")
 def tailoring_file_path(session_target_sat):
     """Return Tailoring file path."""
-    local = get_data_file(OSCAP_TAILORING_FILE)
+    local = DataFile.OSCAP_TAILORING_FILE
     session_target_sat.put(
-        local_path=get_data_file(OSCAP_TAILORING_FILE),
+        local_path=local,
         remote_path=f'/tmp/{OSCAP_TAILORING_FILE}',
     )
     return {'local': local, 'satellite': f'/tmp/{OSCAP_TAILORING_FILE}'}
@@ -27,21 +23,23 @@ def tailoring_file_path(session_target_sat):
 def oscap_content_path(session_target_sat):
     """Download scap content from satellite and return local path of it."""
     local_file = robottelo_tmp_dir.joinpath(PurePath(settings.oscap.content_path).name)
-    session_target_sat.get(remote_path=settings.oscap.content_path, local_path=local_file)
+    session_target_sat.get(remote_path=settings.oscap.content_path, local_path=str(local_file))
     return local_file
 
 
 @pytest.fixture(scope="module")
-def scap_content(import_ansible_roles):
+def scap_content(import_ansible_roles, module_target_sat):
     title = f"rhel-content-{gen_string('alpha')}"
-    scap_info = make_scapcontent({'title': title, 'scap-file': f'{settings.oscap.content_path}'})
+    scap_info = module_target_sat.cli_factory.scapcontent(
+        {'title': title, 'scap-file': f'{settings.oscap.content_path}'}
+    )
     scap_id = scap_info['id']
     scap_info = entities.ScapContents(id=scap_id).read()
 
     scap_profile_id = [
         profile['id']
         for profile in scap_info.scap_content_profiles
-        if OSCAP_PROFILE['security7'] in profile['title']
+        if OSCAP_PROFILE[settings.oscap.profile] in profile['title']
     ][0]
     return {
         "title": title,

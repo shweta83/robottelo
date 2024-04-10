@@ -20,6 +20,6 @@ def session(module_target_sat, test_name, ui_user, request):
             with session:
                 # your ui test steps here
                 session.architecture.create({'name': 'bar'})
-
     """
-    return module_target_sat.ui_session(test_name, ui_user.login, ui_user.password)
+    with module_target_sat.ui_session(test_name, ui_user.login, ui_user.password) as session:
+        yield session

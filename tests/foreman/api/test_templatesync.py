@@ -4,41 +4,33 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Integration
-
 :CaseComponent: TemplatesPlugin
 
-:Assignee: ogajduse
+:Team: Endeavour
 
-:TestType: Functional
-
-:Upstream: No
 """
 import base64
 import json
 import time
 
+from fauxfactory import gen_string
 import pytest
 import requests
-from fauxfactory import gen_string
-from nailgun import entities
 
 from robottelo.config import settings
-from robottelo.constants import FOREMAN_TEMPLATE_IMPORT_API_URL
-from robottelo.constants import FOREMAN_TEMPLATE_IMPORT_URL
-from robottelo.constants import FOREMAN_TEMPLATE_ROOT_DIR
-from robottelo.constants import FOREMAN_TEMPLATE_TEST_TEMPLATE
+from robottelo.constants import (
+    FOREMAN_TEMPLATE_IMPORT_API_URL,
+    FOREMAN_TEMPLATE_IMPORT_URL,
+    FOREMAN_TEMPLATE_ROOT_DIR,
+    FOREMAN_TEMPLATE_TEST_TEMPLATE,
+)
 from robottelo.logging import logger
-
 
 git = settings.git
 
 
 class TestTemplateSyncTestCase:
-    """Implements TemplateSync tests from API
-
-    :CaseLevel: Acceptance
-    """
+    """Implements TemplateSync tests from API"""
 
     @pytest.fixture(scope='module', autouse=True)
     def setUpClass(self, module_target_sat):
@@ -66,13 +58,15 @@ class TestTemplateSyncTestCase:
         )
 
     @pytest.mark.tier2
-    def test_positive_import_filtered_templates_from_git(self, module_org, module_location):
+    def test_positive_import_filtered_templates_from_git(
+        self, module_org, module_location, module_target_sat
+    ):
         """Assure only templates with a given filter regex are pulled from
         git repo.
 
         :id: 628a95d6-7a4e-4e56-ad7b-d9fecd34f765
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                import only the templates matching with regex e.g: `^atomic.*`
                refer to: `/apidoc/v2/template/import.html`
@@ -90,7 +84,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: High
         """
         prefix = gen_string('alpha')
-        filtered_imported_templates = entities.Template().imports(
+        filtered_imported_templates = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'automation',
@@ -104,7 +98,7 @@ class TestTemplateSyncTestCase:
             template['imported'] for template in filtered_imported_templates['message']['templates']
         ].count(True)
         assert imported_count == 8
-        ptemplates = entities.ProvisioningTemplate().search(
+        ptemplates = module_target_sat.api.ProvisioningTemplate().search(
             query={
                 'per_page': '100',
                 'search': f'name~{prefix}',
@@ -113,7 +107,7 @@ class TestTemplateSyncTestCase:
             }
         )
         assert len(ptemplates) == 5
-        ptables = entities.PartitionTable().search(
+        ptables = module_target_sat.api.PartitionTable().search(
             query={
                 'per_page': '100',
                 'search': f'name~{prefix}',
@@ -122,7 +116,7 @@ class TestTemplateSyncTestCase:
             }
         )
         assert len(ptables) == 1
-        jtemplates = entities.JobTemplate().search(
+        jtemplates = module_target_sat.api.JobTemplate().search(
             query={
                 'per_page': '100',
                 'search': f'name~{prefix}',
@@ -131,7 +125,7 @@ class TestTemplateSyncTestCase:
             }
         )
         assert len(jtemplates) == 1
-        rtemplates = entities.ReportTemplate().search(
+        rtemplates = module_target_sat.api.ReportTemplate().search(
             query={
                 'per_page': '10',
                 'search': f'name~{prefix}',
@@ -142,13 +136,13 @@ class TestTemplateSyncTestCase:
         assert len(rtemplates) == 1
 
     @pytest.mark.tier2
-    def test_import_filtered_templates_from_git_with_negate(self, module_org):
+    def test_import_filtered_templates_from_git_with_negate(self, module_org, module_target_sat):
         """Assure templates with a given filter regex are NOT pulled from
         git repo.
 
         :id: a6857454-249b-4a2e-9b53-b5d7b4eb34e3
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                import the templates NOT matching with regex e.g: `^freebsd.*`
                refer to: `/apidoc/v2/template/import.html` using the
@@ -161,7 +155,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Medium
         """
         prefix = gen_string('alpha')
-        filtered_imported_templates = entities.Template().imports(
+        filtered_imported_templates = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'automation',
@@ -175,15 +169,15 @@ class TestTemplateSyncTestCase:
             template['imported'] for template in filtered_imported_templates['message']['templates']
         ].count(False)
         assert not_imported_count == 9
-        ptemplates = entities.ProvisioningTemplate().search(
+        ptemplates = module_target_sat.api.ProvisioningTemplate().search(
             query={'per_page': '100', 'search': 'name~jenkins', 'organization_id': module_org.id}
         )
         assert len(ptemplates) == 6
-        ptables = entities.PartitionTable().search(
+        ptables = module_target_sat.api.PartitionTable().search(
             query={'per_page': '100', 'search': 'name~jenkins', 'organization_id': module_org.id}
         )
         assert len(ptables) == 1
-        rtemplates = entities.ReportTemplate().search(
+        rtemplates = module_target_sat.api.ReportTemplate().search(
             query={'per_page': '100', 'search': 'name~jenkins', 'organization_id': module_org.id}
         )
         assert len(rtemplates) == 1
@@ -192,7 +186,7 @@ class TestTemplateSyncTestCase:
     def test_import_template_with_puppet(self, parametrized_puppet_sat):
         """Importing puppet templates with enabled/disabled puppet module
 
-        :Steps:
+        :steps:
             1. Have enabled(disabled) puppet module
             2. Import template containing puppet
             3. Check if template was imported
@@ -241,7 +235,7 @@ class TestTemplateSyncTestCase:
 
         :id: 04a14a56-bd71-412b-b2da-4b8c3991c401
 
-        :Steps:
+        :steps:
             1. Create new taxonomies, lets say org X and loc Y.
             2. From X and Y taxonomies scope, Import template1 as associate 'never', where the
                 template contains the metadata anything other than X and Y taxonomies.
@@ -266,7 +260,7 @@ class TestTemplateSyncTestCase:
         prefix = gen_string('alpha')
         _, dir_path = create_import_export_local_dir
         # Associate Never
-        entities.Template().imports(
+        target_sat.api.Template().imports(
             data={
                 'repo': dir_path,
                 'prefix': prefix,
@@ -276,7 +270,7 @@ class TestTemplateSyncTestCase:
             }
         )
         # - Template 1 imported in X and Y taxonomies
-        ptemplate = entities.ProvisioningTemplate().search(
+        ptemplate = target_sat.api.ProvisioningTemplate().search(
             query={
                 'per_page': '10',
                 'search': f'name~{prefix}',
@@ -287,7 +281,7 @@ class TestTemplateSyncTestCase:
         assert ptemplate
         assert len(ptemplate[0].read().organization) == 1
         # - Template 1 not imported in metadata taxonomies
-        ptemplate = entities.ProvisioningTemplate().search(
+        ptemplate = target_sat.api.ProvisioningTemplate().search(
             query={
                 'per_page': '10',
                 'search': f'name~{prefix}',
@@ -301,7 +295,7 @@ class TestTemplateSyncTestCase:
             f'cp {dir_path}/example_template.erb {dir_path}/another_template.erb && '
             f'sed -ie "s/name: .*/name: another_template/" {dir_path}/another_template.erb'
         )
-        entities.Template().imports(
+        target_sat.api.Template().imports(
             data={
                 'repo': dir_path,
                 'prefix': prefix,
@@ -311,7 +305,7 @@ class TestTemplateSyncTestCase:
             }
         )
         # - Template 1 taxonomies are not changed
-        ptemplate = entities.ProvisioningTemplate().search(
+        ptemplate = target_sat.api.ProvisioningTemplate().search(
             query={
                 'per_page': '10',
                 'search': f'name~{prefix}example_template',
@@ -322,7 +316,7 @@ class TestTemplateSyncTestCase:
         assert ptemplate
         assert len(ptemplate[0].read().organization) == 1
         # - Template 2 should be imported in importing taxonomies
-        ptemplate = entities.ProvisioningTemplate().search(
+        ptemplate = target_sat.api.ProvisioningTemplate().search(
             query={
                 'per_page': '10',
                 'search': f'name~{prefix}another_template',
@@ -333,7 +327,7 @@ class TestTemplateSyncTestCase:
         assert ptemplate
         assert len(ptemplate[0].read().organization) == 1
         # Associate Always
-        entities.Template().imports(
+        target_sat.api.Template().imports(
             data={
                 'repo': dir_path,
                 'prefix': prefix,
@@ -343,7 +337,7 @@ class TestTemplateSyncTestCase:
             }
         )
         # - Template 1 taxonomies are not changed
-        ptemplate = entities.ProvisioningTemplate().search(
+        ptemplate = target_sat.api.ProvisioningTemplate().search(
             query={
                 'per_page': '10',
                 'search': f'name~{prefix}example_template',
@@ -354,7 +348,7 @@ class TestTemplateSyncTestCase:
         assert ptemplate
         assert len(ptemplate[0].read().organization) == 1
         # - Template 2 taxonomies are not changed
-        ptemplate = entities.ProvisioningTemplate().search(
+        ptemplate = target_sat.api.ProvisioningTemplate().search(
             query={
                 'per_page': '10',
                 'search': f'name~{prefix}another_template',
@@ -366,12 +360,12 @@ class TestTemplateSyncTestCase:
         assert len(ptemplate[0].read().organization) == 1
 
     @pytest.mark.tier2
-    def test_positive_import_from_subdirectory(self, module_org):
+    def test_positive_import_from_subdirectory(self, module_org, module_target_sat):
         """Assure templates are imported from specific repositories subdirectory
 
         :id: 8ea11a1a-165e-4834-9387-7accb4c94e77
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                import templates specifying a git subdirectory e.g:
                `-d {'dirname': 'test_sub_dir'}` in POST body
@@ -383,7 +377,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Medium
         """
         prefix = gen_string('alpha')
-        filtered_imported_templates = entities.Template().imports(
+        filtered_imported_templates = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'automation',
@@ -409,7 +403,7 @@ class TestTemplateSyncTestCase:
 
         :id: b7c98b75-4dd1-4b6a-b424-35b0f48c25db
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                export only the templates matching with regex e.g: `robottelo`
                refer to: `/apidoc/v2/template/export.html`
@@ -422,7 +416,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Low
         """
         dir_name, dir_path = create_import_export_local_dir
-        exported_temps = entities.Template().exports(
+        exported_temps = target_sat.api.Template().exports(
             data={
                 'repo': FOREMAN_TEMPLATE_ROOT_DIR,
                 'dirname': dir_name,
@@ -445,7 +439,7 @@ class TestTemplateSyncTestCase:
 
         :id: 2f8ad8f3-f02b-4b2d-85af-423a228976f3
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                export templates matching that does not matches regex e.g: `robottelo`
                using `negate` option.
@@ -458,7 +452,7 @@ class TestTemplateSyncTestCase:
         """
         # Export some filtered templates to local dir
         _, dir_path = create_import_export_local_dir
-        entities.Template().exports(
+        target_sat.api.Template().exports(
             data={
                 'repo': dir_path,
                 'organization_ids': [module_org.id],
@@ -480,7 +474,7 @@ class TestTemplateSyncTestCase:
 
         :id: ba8a34ce-c2c6-4889-8729-59714c0a4b19
 
-        :Steps:
+        :steps:
             1. Create a template in local directory and specify Org/Loc.
             2. Use import to pull this specific template (using filter).
             3. Using nailgun or direct API call
@@ -497,7 +491,7 @@ class TestTemplateSyncTestCase:
         ex_template = 'example_template.erb'
         prefix = gen_string('alpha')
         _, dir_path = create_import_export_local_dir
-        entities.Template().imports(
+        target_sat.api.Template().imports(
             data={
                 'repo': dir_path,
                 'location_ids': [module_location.id],
@@ -507,7 +501,7 @@ class TestTemplateSyncTestCase:
         )
         export_file = f'{prefix.lower()}{ex_template}'
         # Export same template to local dir with refreshed metadata
-        entities.Template().exports(
+        target_sat.api.Template().exports(
             data={
                 'metadata_export_mode': 'refresh',
                 'repo': dir_path,
@@ -521,7 +515,7 @@ class TestTemplateSyncTestCase:
         )
         assert result.status == 0
         # Export same template to local dir with keeping metadata
-        entities.Template().exports(
+        target_sat.api.Template().exports(
             data={
                 'metadata_export_mode': 'keep',
                 'repo': dir_path,
@@ -535,7 +529,7 @@ class TestTemplateSyncTestCase:
         )
         assert result.status == 1
         # Export same template to local dir with removed metadata
-        entities.Template().exports(
+        target_sat.api.Template().exports(
             data={
                 'metadata_export_mode': 'remove',
                 'repo': dir_path,
@@ -552,13 +546,13 @@ class TestTemplateSyncTestCase:
     # Take Templates out of Tech Preview Feature Tests
     @pytest.mark.tier3
     @pytest.mark.parametrize('verbose', [True, False])
-    def test_positive_import_json_output_verbose(self, module_org, verbose):
+    def test_positive_import_json_output_verbose(self, module_org, verbose, module_target_sat):
         """Assert all the required fields displayed in import output when
         verbose is True and False
 
         :id: 74b0a701-341f-4062-9769-e5cb1a1c4792
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Impot a template with verbose `True` and `False` option
 
@@ -574,7 +568,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Low
         """
         prefix = gen_string('alpha')
-        templates = entities.Template().imports(
+        templates = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'master',
@@ -610,7 +604,7 @@ class TestTemplateSyncTestCase:
 
         :id: 4b866144-822c-4786-9188-53bc7e2dd44a
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Create a template and import it from a source
             2. Update the template data in source location
@@ -627,26 +621,26 @@ class TestTemplateSyncTestCase:
         """
         prefix = gen_string('alpha')
         _, dir_path = create_import_export_local_dir
-        pre_template = entities.Template().imports(
+        pre_template = target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id], 'prefix': prefix}
         )
         assert bool(pre_template['message']['templates'][0]['imported'])
         target_sat.execute(f'echo " Updating Template data." >> {dir_path}/example_template.erb')
-        post_template = entities.Template().imports(
+        post_template = target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id], 'prefix': prefix}
         )
         assert bool(post_template['message']['templates'][0]['changed'])
 
     @pytest.mark.tier2
     def test_positive_import_json_output_changed_key_false(
-        self, create_import_export_local_dir, module_org
+        self, create_import_export_local_dir, module_org, module_target_sat
     ):
         """Assert template imports output `changed` key returns `False` when
         template data gets updated
 
         :id: 64456c0c-c2c6-4a1c-a16e-54ca4a8b66d3
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Create a template and import it from a source
             2. Dont update the template data in source location
@@ -662,11 +656,11 @@ class TestTemplateSyncTestCase:
         """
         prefix = gen_string('alpha')
         _, dir_path = create_import_export_local_dir
-        pre_template = entities.Template().imports(
+        pre_template = module_target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id], 'prefix': prefix}
         )
         assert bool(pre_template['message']['templates'][0]['imported'])
-        post_template = entities.Template().imports(
+        post_template = module_target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id], 'prefix': prefix}
         )
         assert not bool(post_template['message']['templates'][0]['changed'])
@@ -679,7 +673,7 @@ class TestTemplateSyncTestCase:
 
         :id: a5639368-3d23-4a37-974a-889e2ec0916e
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Create a template with some name and import it from a source
 
@@ -696,22 +690,22 @@ class TestTemplateSyncTestCase:
         target_sat.execute(
             f'sed -ie "s/name: .*/name: {template_name}/" {dir_path}/example_template.erb'
         )
-        template = entities.Template().imports(
+        template = target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id]}
         )
-        assert 'name' in template['message']['templates'][0].keys()
+        assert 'name' in template['message']['templates'][0]
         assert template_name == template['message']['templates'][0]['name']
 
     @pytest.mark.tier2
     def test_positive_import_json_output_imported_key(
-        self, create_import_export_local_dir, module_org
+        self, create_import_export_local_dir, module_org, module_target_sat
     ):
         """Assert template imports output `imported` key returns `True` on
         successful import
 
         :id: 5bc11163-e8f3-4744-8a76-5c16e6e46e86
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Create a template and import it from a source
 
@@ -724,19 +718,21 @@ class TestTemplateSyncTestCase:
         """
         prefix = gen_string('alpha')
         _, dir_path = create_import_export_local_dir
-        template = entities.Template().imports(
+        template = module_target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id], 'prefix': prefix}
         )
         assert bool(template['message']['templates'][0]['imported'])
 
     @pytest.mark.tier2
-    def test_positive_import_json_output_file_key(self, create_import_export_local_dir, module_org):
+    def test_positive_import_json_output_file_key(
+        self, create_import_export_local_dir, module_org, module_target_sat
+    ):
         """Assert template imports output `file` key returns correct file name
         from where the template is imported
 
         :id: da0b094c-6dc8-4526-b115-8e08bfb05fbb
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Create a template with some name and import it from a source
 
@@ -749,10 +745,10 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Low
         """
         _, dir_path = create_import_export_local_dir
-        template = entities.Template().imports(
+        template = module_target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id]}
         )
-        assert 'example_template.erb' == template['message']['templates'][0]['file']
+        assert template['message']['templates'][0]['file'] == 'example_template.erb'
 
     @pytest.mark.tier2
     def test_positive_import_json_output_corrupted_metadata(
@@ -763,7 +759,7 @@ class TestTemplateSyncTestCase:
 
         :id: 6bd5bc6b-a7a2-4529-9df6-47a670cd86d8
 
-        :Steps:
+        :steps:
             1. Create a template with wrong syntax in metadata
             2. Using nailgun or direct API call
                Import above template
@@ -779,25 +775,25 @@ class TestTemplateSyncTestCase:
         """
         _, dir_path = create_import_export_local_dir
         target_sat.execute(f'sed -ie "s/<%#/$#$#@%^$^@@RT$$/" {dir_path}/example_template.erb')
-        template = entities.Template().imports(
+        template = target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id]}
         )
         assert not bool(template['message']['templates'][0]['imported'])
         assert (
-            'Failed to parse metadata' == template['message']['templates'][0]['additional_errors']
+            template['message']['templates'][0]['additional_errors'] == 'Failed to parse metadata'
         )
 
     @pytest.mark.skip_if_open('BZ:1787355')
     @pytest.mark.tier2
     def test_positive_import_json_output_filtered_skip_message(
-        self, create_import_export_local_dir, module_org
+        self, create_import_export_local_dir, module_org, module_target_sat
     ):
         """Assert template imports output returns template import skipped info
         for templates whose name doesnt match the filter
 
         :id: db68b5de-7647-4568-b79c-2aec3292328a
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Create template with name not matching filter
 
@@ -811,7 +807,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Low
         """
         _, dir_path = create_import_export_local_dir
-        template = entities.Template().imports(
+        template = module_target_sat.api.Template().imports(
             data={
                 'repo': dir_path,
                 'organization_ids': [module_org.id],
@@ -820,8 +816,8 @@ class TestTemplateSyncTestCase:
         )
         assert not bool(template['message']['templates'][0]['imported'])
         assert (
-            "Skipping, 'name' filtered out based on 'filter' and 'negate' settings"
-            == template['message']['templates'][0]['additional_info']
+            template['message']['templates'][0]['additional_info']
+            == "Skipping, 'name' filtered out based on 'filter' and 'negate' settings"
         )
 
     @pytest.mark.tier2
@@ -833,7 +829,7 @@ class TestTemplateSyncTestCase:
 
         :id: 259a8a3a-8749-442d-a2bc-51e9af89ce8c
 
-        :Steps:
+        :steps:
             1. Create a template without name in metadata
             2. Using nailgun or direct API call
                Import above template
@@ -849,13 +845,13 @@ class TestTemplateSyncTestCase:
         """
         _, dir_path = create_import_export_local_dir
         target_sat.execute(f'sed -ie "s/name: .*/name: /" {dir_path}/example_template.erb')
-        template = entities.Template().imports(
+        template = target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id]}
         )
         assert not bool(template['message']['templates'][0]['imported'])
         assert (
-            "No 'name' found in metadata"
-            == template['message']['templates'][0]['additional_errors']
+            template['message']['templates'][0]['additional_errors']
+            == "No 'name' found in metadata"
         )
 
     @pytest.mark.tier2
@@ -867,7 +863,7 @@ class TestTemplateSyncTestCase:
 
         :id: d3f1ffe4-58d7-45a8-b278-74e081dc5062
 
-        :Steps:
+        :steps:
             1. Create a template without model keyword in metadata
             2. Using nailgun or direct API call
                Import above template
@@ -883,13 +879,13 @@ class TestTemplateSyncTestCase:
         """
         _, dir_path = create_import_export_local_dir
         target_sat.execute(f'sed -ie "/model: .*/d" {dir_path}/example_template.erb')
-        template = entities.Template().imports(
+        template = target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id]}
         )
         assert not bool(template['message']['templates'][0]['imported'])
         assert (
-            "No 'model' found in metadata"
-            == template['message']['templates'][0]['additional_errors']
+            template['message']['templates'][0]['additional_errors']
+            == "No 'model' found in metadata"
         )
 
     @pytest.mark.tier2
@@ -901,7 +897,7 @@ class TestTemplateSyncTestCase:
 
         :id: 5007b12d-1cf6-49e6-8e54-a189d1a209de
 
-        :Steps:
+        :steps:
             1. Create a template with blank model name in metadata
             2. Using nailgun or direct API call
                Import above template
@@ -917,13 +913,13 @@ class TestTemplateSyncTestCase:
         """
         _, dir_path = create_import_export_local_dir
         target_sat.execute(f'sed -ie "s/model: .*/model: /" {dir_path}/example_template.erb')
-        template = entities.Template().imports(
+        template = target_sat.api.Template().imports(
             data={'repo': dir_path, 'organization_ids': [module_org.id]}
         )
         assert not bool(template['message']['templates'][0]['imported'])
         assert (
-            "Template type  was not found, are you missing a plugin?"
-            == template['message']['templates'][0]['additional_errors']
+            template['message']['templates'][0]['additional_errors']
+            == "Template type  was not found, are you missing a plugin?"
         )
 
     @pytest.mark.tier2
@@ -934,7 +930,7 @@ class TestTemplateSyncTestCase:
 
         :id: 141b893d-72a3-47c2-bb03-004c757bcfc9
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Export all the templates
 
@@ -947,7 +943,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Low
         """
         prefix = gen_string('alpha')
-        imported_templates = entities.Template().imports(
+        imported_templates = target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'automation',
@@ -962,14 +958,14 @@ class TestTemplateSyncTestCase:
         assert imported_count == 17  # Total Count
         # Export some filtered templates to local dir
         _, dir_path = create_import_export_local_dir
-        exported_templates = entities.Template().exports(
+        exported_templates = target_sat.api.Template().exports(
             data={'repo': dir_path, 'organization_ids': [module_org.id], 'filter': prefix}
         )
         exported_count = [
             template['exported'] for template in exported_templates['message']['templates']
         ].count(True)
         assert exported_count == 17
-        assert 'name' in exported_templates['message']['templates'][0].keys()
+        assert 'name' in exported_templates['message']['templates'][0]
         assert (
             target_sat.execute(
                 f'[ -d {dir_path}/job_templates ] && '
@@ -986,7 +982,7 @@ class TestTemplateSyncTestCase:
 
         :id: 19ed0e6a-ee77-4e28-86c9-49db1adec479
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Import template from a source
 
@@ -995,11 +991,9 @@ class TestTemplateSyncTestCase:
 
         :Requirement: Take Templates out of tech preview
 
-        :CaseLevel: System
-
         :CaseImportance: Low
         """
-        entities.Template().imports(
+        target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'master',
@@ -1024,7 +1018,7 @@ class TestTemplateSyncTestCase:
 
         :id: 8ae370b1-84e8-436e-a7d7-99cd0b8f45b1
 
-        :Steps:
+        :steps:
             1. Using nailgun or direct API call
                Export template to destination
 
@@ -1033,11 +1027,9 @@ class TestTemplateSyncTestCase:
 
         :Requirement: Take Templates out of tech preview
 
-        :CaseLevel: System
-
         :CaseImportance: Low
         """
-        entities.Template().imports(
+        target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'master',
@@ -1046,7 +1038,7 @@ class TestTemplateSyncTestCase:
             }
         )
         _, dir_path = create_import_export_local_dir
-        entities.Template().exports(
+        target_sat.api.Template().exports(
             data={'repo': dir_path, 'organization_ids': [module_org.id], 'filter': 'empty'}
         )
         time.sleep(5)
@@ -1075,13 +1067,13 @@ class TestTemplateSyncTestCase:
         ids=['non_empty_repo', 'empty_repo'],
     )
     def test_positive_export_all_templates_to_repo(
-        self, module_org, git_repository, git_branch, url
+        self, module_org, git_repository, git_branch, url, module_target_sat
     ):
         """Assure all templates are exported if no filter is specified.
 
         :id: 0bf6fe77-01a3-4843-86d6-22db5b8adf3b
 
-        :Steps:
+        :steps:
             1. Using nailgun export all templates to repository (ensure filters are empty)
 
         :expectedresults:
@@ -1093,7 +1085,7 @@ class TestTemplateSyncTestCase:
 
         :CaseImportance: Low
         """
-        output = entities.Template().exports(
+        output = module_target_sat.api.Template().exports(
             data={
                 'repo': f'{url}/{git.username}/{git_repository["name"]}',
                 'branch': git_branch,
@@ -1117,12 +1109,12 @@ class TestTemplateSyncTestCase:
         assert len(output['message']['templates']) == git_count
 
     @pytest.mark.tier2
-    def test_positive_import_all_templates_from_repo(self, module_org):
+    def test_positive_import_all_templates_from_repo(self, module_org, module_target_sat):
         """Assure all templates are imported if no filter is specified.
 
         :id: 95ac9543-d989-44f4-b4d9-18f20a0b58b9
 
-        :Steps:
+        :steps:
             1. Using nailgun import all templates from repository (ensure filters are empty)
 
         :expectedresults:
@@ -1130,7 +1122,7 @@ class TestTemplateSyncTestCase:
 
         :CaseImportance: Low
         """
-        output = entities.Template().imports(
+        output = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'master',
@@ -1149,12 +1141,12 @@ class TestTemplateSyncTestCase:
         assert len(output['message']['templates']) == git_count
 
     @pytest.mark.tier2
-    def test_negative_import_locked_template(self, module_org):
+    def test_negative_import_locked_template(self, module_org, module_target_sat):
         """Assure locked templates are not pulled from repository.
 
         :id: 88e21cad-448e-45e0-add2-94493a1319c5
 
-        :Steps:
+        :steps:
             1. Using nailgun try to import a locked template
 
         :expectedresults:
@@ -1163,7 +1155,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Medium
         """
         # import template with lock
-        output = entities.Template().imports(
+        output = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'locked',
@@ -1175,7 +1167,7 @@ class TestTemplateSyncTestCase:
         )
         assert output['message']['templates'][0]['imported']
         # try to import same template with changed content
-        output = entities.Template().imports(
+        output = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'locked',
@@ -1192,18 +1184,18 @@ class TestTemplateSyncTestCase:
         )
         res.raise_for_status()
         git_content = base64.b64decode(json.loads(res.text)['content'])
-        sat_content = entities.ProvisioningTemplate(
+        sat_content = module_target_sat.api.ProvisioningTemplate(
             id=output['message']['templates'][0]['id']
         ).read()
         assert git_content.decode('utf-8') == sat_content.template
 
     @pytest.mark.tier2
-    def test_positive_import_locked_template(self, module_org):
+    def test_positive_import_locked_template(self, module_org, module_target_sat):
         """Assure locked templates are pulled from repository while using force parameter.
 
         :id: 936c91cc-1947-45b0-8bf0-79ba4be87b97
 
-        :Steps:
+        :steps:
             1. Using nailgun try to import a locked template with force parameter
 
         :expectedresults:
@@ -1212,7 +1204,7 @@ class TestTemplateSyncTestCase:
         :CaseImportance: Medium
         """
         # import template with lock
-        output = entities.Template().imports(
+        output = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'locked',
@@ -1224,7 +1216,7 @@ class TestTemplateSyncTestCase:
         )
         assert output['message']['templates'][0]['imported']
         # force import same template with changed content
-        output = entities.Template().imports(
+        output = module_target_sat.api.Template().imports(
             data={
                 'repo': FOREMAN_TEMPLATE_IMPORT_URL,
                 'branch': 'locked',
@@ -1243,7 +1235,7 @@ class TestTemplateSyncTestCase:
         )
         res.raise_for_status()
         git_content = base64.b64decode(json.loads(res.text)['content'])
-        sat_content = entities.ProvisioningTemplate(
+        sat_content = module_target_sat.api.ProvisioningTemplate(
             id=output['message']['templates'][0]['id']
         ).read()
         assert git_content.decode('utf-8') == sat_content.template

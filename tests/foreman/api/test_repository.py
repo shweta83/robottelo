@@ -4,46 +4,32 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Component
-
 :CaseComponent: Repositories
 
-:Assignee: chiggins
-
-:TestType: Functional
+:team: Phoenix-content
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import re
+from string import punctuation
 import tempfile
 import time
-from string import punctuation
-from urllib.parse import urljoin
-from urllib.parse import urlparse
-from urllib.parse import urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
-import pytest
 from fauxfactory import gen_string
 from nailgun import client
-from nailgun import entities
-from nailgun.entity_mixins import TaskFailedError
+from nailgun.entity_mixins import TaskFailedError, call_entity_method_with_timeout
+import pytest
 from requests.exceptions import HTTPError
 
 from robottelo import constants
-from robottelo import datafactory
-from robottelo import manifests
-from robottelo.api.utils import call_entity_method_with_timeout
-from robottelo.api.utils import enable_rhrepo_and_fetchid
-from robottelo.api.utils import promote
-from robottelo.api.utils import upload_manifest
 from robottelo.config import settings
-from robottelo.constants import repos as repo_constants
-from robottelo.datafactory import parametrized
-from robottelo.helpers import get_data_file
-from robottelo.helpers import read_data_file
+from robottelo.constants import DataFile, repos as repo_constants
+from robottelo.content_info import get_repo_files_by_url
 from robottelo.logging import logger
+from robottelo.utils import datafactory
+from robottelo.utils.datafactory import parametrized
 
 
 @pytest.fixture
@@ -56,36 +42,18 @@ def repo_options(request, module_org, module_product):
 
 
 @pytest.fixture
-def repo_options_custom_product(request, module_org):
+def repo_options_custom_product(request, module_org, module_target_sat):
     """Return the options that were passed as indirect parameters."""
     options = getattr(request, 'param', {}).copy()
     options['organization'] = module_org
-    options['product'] = entities.Product(organization=module_org).create()
+    options['product'] = module_target_sat.api.Product(organization=module_org).create()
     return options
 
 
 @pytest.fixture
-def env(module_org):
-    """Create a new puppet environment."""
-    return entities.Environment(organization=[module_org]).create()
-
-
-@pytest.fixture
-def repo(repo_options):
+def repo(repo_options, module_target_sat):
     """Create a new repository."""
-    return entities.Repository(**repo_options).create()
-
-
-@pytest.fixture
-def http_proxy(module_org):
-    """Create a new HTTP proxy."""
-    return entities.HTTPProxy(
-        name=gen_string('alpha', 15),
-        url=settings.http_proxy.auth_proxy_url,
-        username=settings.http_proxy.username,
-        password=settings.http_proxy.password,
-        organization=[module_org.id],
-    ).create()
+    return module_target_sat.api.Repository(**repo_options).create()
 
 
 class TestRepository:
@@ -111,89 +79,6 @@ class TestRepository:
         :CaseImportance: Critical
         """
         assert repo_options['name'] == repo.name
-
-    @pytest.mark.tier2
-    @pytest.mark.upgrade
-    @pytest.mark.skipif(
-        (not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url'
-    )
-    def test_positive_assign_http_proxy_to_repository(self, module_org, module_product, http_proxy):
-        """Assign http_proxy to Repositories and perform repository sync.
-
-        :id: 5b3b992e-02d3-4b16-95ed-21f1588c7741
-
-        :expectedresults: HTTP Proxy can be assigned to repository and sync operation performed
-            successfully.
-
-        :Assignee: jpathan
-
-        :CaseImportance: High
-        """
-        repo_options = {
-            'http_proxy_policy': 'use_selected_http_proxy',
-            'http_proxy_id': http_proxy.id,
-        }
-        repo = entities.Repository(**repo_options).create()
-
-        assert repo.http_proxy_policy == repo_options['http_proxy_policy']
-        assert repo.http_proxy_id == http_proxy.id
-        repo.sync()
-        assert repo.read().content_counts['rpm'] >= 1
-
-        # Use global_default_http_proxy
-        repo_options['http_proxy_policy'] = 'global_default_http_proxy'
-        repo_2 = entities.Repository(**repo_options).create()
-        assert repo_2.http_proxy_policy == 'global_default_http_proxy'
-
-        # Update to selected_http_proxy
-        repo_2.http_proxy_policy = 'none'
-        repo_2.update(['http_proxy_policy'])
-        assert repo_2.http_proxy_policy == 'none'
-
-    @pytest.mark.skip_if_open("BZ:2042473")
-    @pytest.mark.tier2
-    @pytest.mark.upgrade
-    def test_positive_sync_redhat_repo_using_http_proxy(self, module_manifest_org):
-        """Assign http_proxy to Redhat repository and perform repository sync.
-
-        :id: 38df5479-9127-49f3-a30e-26b33655971a
-
-        :expectedresults: HTTP Proxy can be assigned to redhat repository and sync operation
-            performed successfully.
-
-        :Assignee: jpathan
-
-        :BZ: 2011303, 2042473
-
-        :CaseImportance: Critical
-        """
-        http_proxy = entities.HTTPProxy(
-            name=gen_string('alpha', 15),
-            url=settings.http_proxy.auth_proxy_url,
-            username=settings.http_proxy.username,
-            password=settings.http_proxy.password,
-            organization=[module_manifest_org.id],
-        ).create()
-
-        rh_repo_id = enable_rhrepo_and_fetchid(
-            basearch=constants.DEFAULT_ARCHITECTURE,
-            org_id=module_manifest_org.id,
-            product=constants.PRDS['rhae'],
-            repo=constants.REPOS['rhae2']['name'],
-            reposet=constants.REPOSET['rhae2'],
-            releasever=None,
-        )
-        rh_repo = entities.Repository(
-            id=rh_repo_id,
-            http_proxy_policy='use_selected_http_proxy',
-            http_proxy_id=http_proxy.id,
-            download_policy='immediate',
-        ).update()
-        assert rh_repo.http_proxy_policy == 'use_selected_http_proxy'
-        assert rh_repo.http_proxy_id == http_proxy.id
-        assert rh_repo.download_policy == 'immediate'
-        rh_repo.sync()
-        assert rh_repo.read().content_counts['rpm'] >= 1
 
     @pytest.mark.tier1
     @pytest.mark.parametrize(
@@ -301,7 +186,7 @@ class TestRepository:
     @pytest.mark.parametrize(
         'repo_options', **datafactory.parametrized([{'content_type': 'yum'}]), indirect=True
     )
-    def test_positive_create_with_default_download_policy(self, repo):
+    def test_positive_create_with_default_download_policy(self, repo, target_sat):
         """Verify if the default download policy is assigned
         when creating a YUM repo without `download_policy` field
 
@@ -314,7 +199,7 @@ class TestRepository:
         :CaseImportance: Critical
         """
 
-        default_dl_policy = entities.Setting().search(
+        default_dl_policy = target_sat.api.Setting().search(
             query={'search': 'name=default_download_policy'}
         )
         assert default_dl_policy
@@ -414,24 +299,24 @@ class TestRepository:
         assert repo.unprotected == repo_options['unprotected']
 
     @pytest.mark.tier2
-    def test_positive_create_with_gpg(self, module_org, module_product):
+    def test_positive_create_with_gpg(self, module_org, module_product, module_target_sat):
         """Create a repository and provide a GPG key ID.
 
         :id: 023cf84b-74f3-4e63-a9d7-10afee6c1990
 
         :expectedresults: A repository is created with the given GPG key ID.
 
-        :CaseLevel: Integration
         """
-        gpg_key = entities.GPGKey(
-            organization=module_org, content=read_data_file(constants.VALID_GPG_KEY_FILE)
+        gpg_key = module_target_sat.api.GPGKey(
+            organization=module_org,
+            content=DataFile.VALID_GPG_KEY_FILE.read_text(),
         ).create()
-        repo = entities.Repository(product=module_product, gpg_key=gpg_key).create()
+        repo = module_target_sat.api.Repository(product=module_product, gpg_key=gpg_key).create()
         # Verify that the given GPG key ID is used.
         assert repo.gpg_key.id == gpg_key.id
 
     @pytest.mark.tier2
-    def test_positive_create_same_name_different_orgs(self, repo):
+    def test_positive_create_same_name_different_orgs(self, repo, target_sat):
         """Create two repos with the same name in two different organizations.
 
         :id: bd1bd7e3-e393-44c8-a6d0-42edade40f60
@@ -439,11 +324,10 @@ class TestRepository:
         :expectedresults: The two repositories are successfully created and
             have given name.
 
-        :CaseLevel: Integration
         """
-        org_2 = entities.Organization().create()
-        product_2 = entities.Product(organization=org_2).create()
-        repo_2 = entities.Repository(product=product_2, name=repo.name).create()
+        org_2 = target_sat.api.Organization().create()
+        product_2 = target_sat.api.Product(organization=org_2).create()
+        repo_2 = target_sat.api.Repository(product=product_2, name=repo.name).create()
         assert repo_2.name == repo.name
 
     @pytest.mark.tier1
@@ -452,7 +336,7 @@ class TestRepository:
         **datafactory.parametrized([{'name': name} for name in datafactory.invalid_values_list()]),
         indirect=True,
     )
-    def test_negative_create_name(self, repo_options):
+    def test_negative_create_name(self, repo_options, target_sat):
         """Attempt to create repository with invalid names only.
 
         :id: 24947c92-3415-43df-add6-d6eb38afd8a3
@@ -464,7 +348,7 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier1
     @pytest.mark.parametrize(
@@ -474,7 +358,7 @@ class TestRepository:
         ),
         indirect=True,
     )
-    def test_negative_create_with_same_name(self, repo_options, repo):
+    def test_negative_create_with_same_name(self, repo_options, repo, target_sat):
         """Attempt to create a repository providing a name of already existent
         entity
 
@@ -487,10 +371,10 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier1
-    def test_negative_create_label(self, module_product):
+    def test_negative_create_label(self, module_product, module_target_sat):
         """Attempt to create repository with invalid label.
 
         :id: f646ae84-2660-41bd-9883-331285fa1c9a
@@ -500,7 +384,9 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(product=module_product, label=gen_string('utf8')).create()
+            module_target_sat.api.Repository(
+                product=module_product, label=gen_string('utf8')
+            ).create()
 
     @pytest.mark.tier1
     @pytest.mark.parametrize(
@@ -508,7 +394,7 @@ class TestRepository:
         **datafactory.parametrized([{'url': url} for url in datafactory.invalid_names_list()]),
         indirect=True,
     )
-    def test_negative_create_url(self, repo_options):
+    def test_negative_create_url(self, repo_options, target_sat):
         """Attempt to create repository with invalid url.
 
         :id: 0bb9fc3f-d442-4437-b5d8-83024bc7ceab
@@ -520,7 +406,7 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier1
     @pytest.mark.skipif(
@@ -531,7 +417,7 @@ class TestRepository:
         **datafactory.parametrized([{'url': f'http://{gen_string("alpha")}{punctuation}.com'}]),
         indirect=True,
     )
-    def test_negative_create_with_url_with_special_characters(self, repo_options):
+    def test_negative_create_with_url_with_special_characters(self, repo_options, target_sat):
         """Verify that repository URL cannot contain unquoted special characters
 
         :id: 2ffaa412-e5e5-4bec-afaa-9ea54315df49
@@ -543,7 +429,7 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier1
     @pytest.mark.parametrize(
@@ -553,7 +439,7 @@ class TestRepository:
         ),
         indirect=True,
     )
-    def test_negative_create_with_invalid_download_policy(self, repo_options):
+    def test_negative_create_with_invalid_download_policy(self, repo_options, target_sat):
         """Verify that YUM repository cannot be created with invalid
         download policy
 
@@ -567,13 +453,13 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier1
     @pytest.mark.parametrize(
         'repo_options', **datafactory.parametrized([{'content_type': 'yum'}]), indirect=True
     )
-    def test_negative_update_to_invalid_download_policy(self, repo):
+    def test_negative_update_to_invalid_download_policy(self, repo, target_sat):
         """Verify that YUM repository cannot be updated to invalid
         download policy
 
@@ -593,16 +479,15 @@ class TestRepository:
     @pytest.mark.tier1
     @pytest.mark.parametrize(
         'repo_options',
-        **datafactory.parametrized(
-            [
-                {'content_type': content_type, 'download_policy': 'on_demand'}
-                for content_type in constants.REPO_TYPE.keys()
-                if content_type != 'yum'
-            ]
-        ),
+        [
+            {'content_type': content_type, 'download_policy': 'on_demand'}
+            for content_type in constants.REPO_TYPE
+            if content_type not in ['yum', 'docker']
+        ],
         indirect=True,
+        ids=lambda x: x['content_type'],
     )
-    def test_negative_create_non_yum_with_download_policy(self, repo_options):
+    def test_negative_create_non_yum_with_download_policy(self, repo_options, target_sat):
         """Verify that non-YUM repositories cannot be created with
         download policy
 
@@ -616,7 +501,7 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier1
     @pytest.mark.parametrize(
@@ -626,7 +511,7 @@ class TestRepository:
         ),
         indirect=True,
     )
-    def test_negative_create_checksum(self, repo_options):
+    def test_negative_create_checksum(self, repo_options, target_sat):
         """Attempt to create repository with invalid checksum type.
 
         :id: c49a3c49-110d-4b74-ae14-5c9494a4541c
@@ -638,7 +523,7 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier1
     @pytest.mark.parametrize(
@@ -650,7 +535,7 @@ class TestRepository:
         ids=['sha1', 'sha256'],
         indirect=True,
     )
-    def test_negative_create_checksum_with_on_demand_policy(self, repo_options):
+    def test_negative_create_checksum_with_on_demand_policy(self, repo_options, target_sat):
         """Attempt to create repository with checksum and on_demand policy.
 
         :id: de8b157c-ed62-454b-94eb-22659ce1158e
@@ -662,7 +547,7 @@ class TestRepository:
         :CaseImportance: Critical
         """
         with pytest.raises(HTTPError):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier1
     @pytest.mark.parametrize(
@@ -772,49 +657,34 @@ class TestRepository:
         assert repo.unprotected is True
 
     @pytest.mark.tier2
-    def test_positive_update_gpg(self, module_org, module_product):
+    def test_positive_update_gpg(self, module_org, module_product, module_target_sat):
         """Create a repository and update its GPGKey
 
         :id: 0e9319dc-c922-4ecf-9f83-d221cfdf54c2
 
         :expectedresults: The updated repository points to a new GPG key.
 
-        :CaseLevel: Integration
         """
         # Create a repo and make it point to a GPG key.
-        gpg_key_1 = entities.GPGKey(
-            organization=module_org, content=read_data_file(constants.VALID_GPG_KEY_FILE)
+        gpg_key_1 = module_target_sat.api.GPGKey(
+            organization=module_org,
+            content=DataFile.VALID_GPG_KEY_FILE.read_text(),
         ).create()
-        repo = entities.Repository(product=module_product, gpg_key=gpg_key_1).create()
+        repo = module_target_sat.api.Repository(product=module_product, gpg_key=gpg_key_1).create()
 
         # Update the repo and make it point to a new GPG key.
-        gpg_key_2 = entities.GPGKey(
-            organization=module_org, content=read_data_file(constants.VALID_GPG_KEY_BETA_FILE)
+        gpg_key_2 = module_target_sat.api.GPGKey(
+            organization=module_org,
+            content=DataFile.VALID_GPG_KEY_BETA_FILE.read_text(),
         ).create()
 
         repo.gpg_key = gpg_key_2
         repo = repo.update(['gpg_key'])
         assert repo.gpg_key.id == gpg_key_2.id
 
-    @pytest.mark.tier2
-    def test_positive_update_contents(self, repo):
-        """Create a repository and upload RPM contents.
-
-        :id: 8faa64f9-b620-4c0a-8c80-801e8e6436f1
-
-        :expectedresults: The repository's contents include one RPM.
-
-        :CaseLevel: Integration
-        """
-        # Upload RPM content.
-        with open(get_data_file(constants.RPM_TO_UPLOAD), 'rb') as handle:
-            repo.upload_content(files={'content': handle})
-        # Verify the repository's contents.
-        assert repo.read().content_counts['rpm'] == 1
-
     @pytest.mark.tier1
     @pytest.mark.upgrade
-    def test_positive_upload_delete_srpm(self, repo):
+    def test_positive_upload_delete_srpm(self, repo, target_sat):
         """Create a repository and upload, delete SRPM contents.
 
         :id: e091a725-048f-44ca-90cc-c016c450ced9
@@ -828,11 +698,12 @@ class TestRepository:
         :BZ: 1378442
         """
         # upload srpm
-        entities.ContentUpload(repository=repo).upload(
-            filepath=get_data_file(constants.SRPM_TO_UPLOAD), content_type='srpm'
+        target_sat.api.ContentUpload(repository=repo).upload(
+            filepath=DataFile.SRPM_TO_UPLOAD,
+            content_type='srpm',
         )
         assert repo.read().content_counts['srpm'] == 1
-        srpm_detail = entities.Srpms().search(query={'repository_id': repo.id})
+        srpm_detail = target_sat.api.Srpms().search(query={'repository_id': repo.id})
         assert len(srpm_detail) == 1
 
         # Delete srpm
@@ -851,7 +722,7 @@ class TestRepository:
         ids=['yum_fake'],
         indirect=True,
     )
-    def test_positive_create_delete_srpm_repo(self, repo):
+    def test_positive_create_delete_srpm_repo(self, repo, target_sat):
         """Create a repository, sync SRPM contents and remove repo
 
         :id: e091a725-042f-43ca-99cc-c017c450ced9
@@ -864,7 +735,7 @@ class TestRepository:
         """
         repo.sync()
         assert repo.read().content_counts['srpm'] == 3
-        assert len(entities.Srpms().search(query={'repository_id': repo.id})) == 3
+        assert len(target_sat.api.Srpms().search(query={'repository_id': repo.id})) == 3
         repo.delete()
         with pytest.raises(HTTPError):
             repo.read()
@@ -879,7 +750,7 @@ class TestRepository:
         ids=['yum_fake_2'],
         indirect=True,
     )
-    def test_positive_remove_contents(self, repo):
+    def test_positive_remove_contents(self, repo, target_sat):
         """Synchronize a repository and remove rpm content.
 
         :id: f686b74b-7ee9-4806-b999-bc05ffe61a9d
@@ -896,7 +767,7 @@ class TestRepository:
         repo.sync()
         assert repo.read().content_counts['rpm'] >= 1
         # Find repo packages and remove them
-        packages = entities.Package(repository=repo).search(query={'per_page': '1000'})
+        packages = target_sat.api.Package(repository=repo).search(query={'per_page': '1000'})
         repo.remove_content(data={'ids': [package.id for package in packages]})
         assert repo.read().content_counts['rpm'] == 0
 
@@ -966,7 +837,6 @@ class TestRepository:
 
         :expectedresults: The repo has at least one RPM.
 
-        :CaseLevel: Integration
         """
         repo.sync()
         assert repo.read().content_counts['rpm'] >= 1
@@ -1000,7 +870,6 @@ class TestRepository:
 
         :expectedresults: Repository is created and synced
 
-        :CaseLevel: Integration
         """
         # Verify that repo is not yet synced
         assert repo.content_counts['rpm'] == 0
@@ -1039,7 +908,6 @@ class TestRepository:
 
         :expectedresults: Repository is created but synchronization fails
 
-        :CaseLevel: Integration
         """
         with pytest.raises(TaskFailedError):
             repo.sync()
@@ -1054,7 +922,7 @@ class TestRepository:
         ids=['yum_fake_2'],
         indirect=True,
     )
-    def test_positive_resynchronize_rpm_repo(self, repo):
+    def test_positive_resynchronize_rpm_repo(self, repo, target_sat):
         """Check that repository content is resynced after packages were
         removed from repository
 
@@ -1066,13 +934,12 @@ class TestRepository:
 
         :BZ: 1459845, 1318004
 
-        :CaseLevel: Integration
         """
         # Synchronize it
         repo.sync()
         assert repo.read().content_counts['rpm'] >= 1
         # Find repo packages and remove them
-        packages = entities.Package(repository=repo).search(query={'per_page': '1000'})
+        packages = target_sat.api.Package(repository=repo).search(query={'per_page': '1000'})
         repo.remove_content(data={'ids': [package.id for package in packages]})
         assert repo.read().content_counts['rpm'] == 0
         # Re-synchronize repository
@@ -1122,7 +989,6 @@ class TestRepository:
 
         :expectedresults: The repository deleted successfully.
 
-        :CaseLevel: Integration
         """
         repo.sync()
         # Check that there is at least one package
@@ -1156,8 +1022,6 @@ class TestRepository:
         :expectedresults: The repository data file successfully accessed.
 
         :BZ: 1242310
-
-        :CaseLevel: Integration
 
         :CaseImportance: High
         """
@@ -1198,8 +1062,6 @@ class TestRepository:
         :parametrized: yes
 
         :expectedresults: The repository data file is successfully accessed.
-
-        :CaseLevel: Integration
 
         :CaseImportance: Medium
         """
@@ -1253,7 +1115,7 @@ class TestRepository:
         with pytest.raises(HTTPError):
             repo.read()
 
-    def test_positive_recreate_pulp_repositories(self, module_org, target_sat):
+    def test_positive_recreate_pulp_repositories(self, module_entitlement_manifest_org, target_sat):
         """Verify that deleted Pulp Repositories can be recreated using the
         command 'foreman-rake katello:correct_repositories COMMIT=true'
 
@@ -1266,17 +1128,15 @@ class TestRepository:
         :expectedresults: foreman-rake katello:correct_repositories COMMIT=true recreates deleted
          repos with no TaskErrors
         """
-        with manifests.clone() as manifest:
-            upload_manifest(module_org.id, manifest.content)
-        repo_id = enable_rhrepo_and_fetchid(
+        repo_id = target_sat.api_factory.enable_rhrepo_and_fetchid(
             basearch='x86_64',
-            org_id=module_org.id,
+            org_id=module_entitlement_manifest_org.id,
             product=constants.PRDS['rhel'],
             repo=constants.REPOS['rhst7']['name'],
             reposet=constants.REPOSET['rhst7'],
             releasever=None,
         )
-        call_entity_method_with_timeout(entities.Repository(id=repo_id).sync, timeout=1500)
+        call_entity_method_with_timeout(target_sat.api.Repository(id=repo_id).sync, timeout=1500)
         with target_sat.session.shell() as sh:
             sh.send('foreman-rake console')
             time.sleep(30)  # sleep to allow time for console to open
@@ -1286,11 +1146,117 @@ class TestRepository:
         identifier = results.stdout.split('version_href\n"', 1)[1].split('version')[0]
         target_sat.execute(
             f'curl -X DELETE {target_sat.url}/{identifier}'
-            f' --cert /etc/pki/katello/certs/pulp-client.crt'
-            f' --key /etc/pki/katello/private/pulp-client.key'
+            f' --cert /etc/foreman/client_cert.pem'
+            f' --key /etc/foreman/client_key.pem'
         )
         command_output = target_sat.execute('foreman-rake katello:correct_repositories COMMIT=true')
-        assert 'Recreating' in command_output.stdout and 'TaskError' not in command_output.stdout
+        assert 'Recreating' in command_output.stdout
+        assert 'TaskError' not in command_output.stdout
+
+    @pytest.mark.tier2
+    def test_positive_mirroring_policy(self, target_sat):
+        """Assert that the content of a repository with 'Mirror Policy' enabled
+        is restored properly after resync.
+
+        :id: cbf1c781-cb96-4b4a-bae2-15c9f5be5e50
+
+        :steps:
+            1. Create and sync a repo with 'Mirror Policy - mirror complete' enabled.
+            2. Remove all packages from the repo and upload another one.
+            3. Resync the repo again.
+            4. Check the content was restored properly.
+
+        :expectedresults:
+            1. The resync restores the original content properly.
+
+        """
+        repo_url = settings.repos.yum_0.url
+        packages_count = constants.FAKE_0_YUM_REPO_PACKAGES_COUNT
+
+        org = target_sat.api.Organization().create()
+        prod = target_sat.api.Product(organization=org).create()
+        repo = target_sat.api.Repository(
+            download_policy='immediate',
+            mirroring_policy='mirror_complete',
+            product=prod,
+            url=repo_url,
+        ).create()
+        repo.sync()
+        repo = repo.read()
+        assert repo.content_counts['rpm'] == packages_count
+
+        # remove all packages from the repo and upload another one
+        packages = target_sat.api.Package(repository=repo).search(query={'per_page': '1000'})
+        repo.remove_content(data={'ids': [package.id for package in packages]})
+
+        with open(DataFile.RPM_TO_UPLOAD, 'rb') as handle:
+            repo.upload_content(files={'content': handle})
+
+        repo = repo.read()
+        assert repo.content_counts['rpm'] == 1
+        files = get_repo_files_by_url(repo.full_path)
+        assert len(files) == 1
+        assert constants.RPM_TO_UPLOAD in files
+
+        # resync the repo again and check the content
+        repo.sync()
+
+        repo = repo.read()
+        assert repo.content_counts['rpm'] == packages_count
+        files = get_repo_files_by_url(repo.full_path)
+        assert len(files) == packages_count
+        assert constants.RPM_TO_UPLOAD not in files
+
+    @pytest.mark.tier3
+    @pytest.mark.parametrize('policy', ['additive', 'mirror_content_only'])
+    def test_positive_sync_with_treeinfo_ignore(
+        self, target_sat, function_entitlement_manifest_org, policy
+    ):
+        """Verify that the treeinfo file is not synced when added to ignorable content
+        and synced otherwise. Check for applicable mirroring policies.
+
+        :id: d7becf1d-3883-468d-88c4-d513a2e2e90a
+
+        :parametrized: yes
+
+        :steps:
+            1. Enable RHEL8 BaseOS KS repo.
+            2. Add `treeinfo` to ignorable content and sync, check it's missing.
+            3. Remove the `treeinfo` from ignorable content, resync, check again.
+
+        :expectedresults:
+            1. The sync should succeed.
+            2. The treeinfo file should be missing when in ignorable content and present otherwise.
+
+        :customerscenario: true
+
+        :BZ: 2174912, 2135215
+
+        """
+        distro = 'rhel8_bos'
+        repo_id = target_sat.api_factory.enable_rhrepo_and_fetchid(
+            basearch='x86_64',
+            org_id=function_entitlement_manifest_org.id,
+            product=constants.REPOS['kickstart'][distro]['product'],
+            reposet=constants.REPOS['kickstart'][distro]['reposet'],
+            repo=constants.REPOS['kickstart'][distro]['name'],
+            releasever=constants.REPOS['kickstart'][distro]['version'],
+        )
+        repo = target_sat.api.Repository(id=repo_id).read()
+
+        repo.mirroring_policy = policy
+        repo.ignorable_content = ['treeinfo']
+        repo = repo.update(['mirroring_policy', 'ignorable_content'])
+        repo.sync()
+        with pytest.raises(AssertionError):
+            target_sat.md5_by_url(f'{repo.full_path}.treeinfo')
+
+        repo.ignorable_content = []
+        repo = repo.update(['ignorable_content'])
+        repo.sync()
+        assert target_sat.md5_by_url(
+            f'{repo.full_path}.treeinfo'
+        ), 'The treeinfo file is missing in the KS repo but it should be there.'
 
 
 @pytest.mark.run_in_one_thread
@@ -1298,27 +1264,43 @@ class TestRepositorySync:
     """Tests for ``/katello/api/repositories/:id/sync``."""
 
     @pytest.mark.tier2
-    @pytest.mark.skip_if_not_set('fake_manifest')
-    def test_positive_sync_rh(self, module_org):
+    def test_positive_sync_repos_with_lots_files(self, target_sat):
+        """Attempt to synchronize repository containing a lot of files inside
+        rpms.
+
+        :id: 2cc09ce3-d5df-4caa-956a-78f83a7735ca
+
+        :customerscenario: true
+
+        :BZ: 1404345
+
+        :expectedresults: repository was successfully synchronized
+        """
+        org = target_sat.api.Organization().create()
+        product = target_sat.api.Product(organization=org).create()
+        repo = target_sat.api.Repository(product=product, url=settings.repos.yum_8.url).create()
+        response = repo.sync()
+        assert response, f"Repository {repo} failed to sync."
+
+    @pytest.mark.tier2
+    @pytest.mark.build_sanity
+    def test_positive_sync_rh(self, module_sca_manifest_org, target_sat):
         """Sync RedHat Repository.
 
         :id: d69c44cd-753c-4a75-9fd5-a8ed963b5e04
 
         :expectedresults: Synced repo should fetch the data successfully.
 
-        :CaseLevel: Integration
         """
-        with manifests.clone() as manifest:
-            upload_manifest(module_org.id, manifest.content)
-        repo_id = enable_rhrepo_and_fetchid(
+        repo_id = target_sat.api_factory.enable_rhrepo_and_fetchid(
             basearch='x86_64',
-            org_id=module_org.id,
+            org_id=module_sca_manifest_org.id,
             product=constants.PRDS['rhel'],
             repo=constants.REPOS['rhst7']['name'],
             reposet=constants.REPOSET['rhst7'],
             releasever=None,
         )
-        entities.Repository(id=repo_id).sync()
+        target_sat.api.Repository(id=repo_id).sync()
 
     @pytest.mark.tier2
     @pytest.mark.skipif(
@@ -1340,8 +1322,6 @@ class TestRepositorySync:
         :expectedresults: Synced repo should fetch the data successfully and
          parse versions as string.
 
-        :CaseLevel: Integration
-
         :customerscenario: true
 
         :BZ: 1741011
@@ -1354,7 +1334,6 @@ class TestRepositorySync:
 
     @pytest.mark.stubbed
     @pytest.mark.tier2
-    @pytest.mark.skip_if_not_set('fake_manifest')
     def test_positive_sync_rh_app_stream(self):
         """Sync RedHat Appstream Repository.
 
@@ -1363,12 +1342,11 @@ class TestRepositorySync:
         :expectedresults: Synced repo should fetch the data successfully and
          it should contain the module streams.
 
-        :CaseLevel: Integration
         """
         pass
 
     @pytest.mark.tier3
-    def test_positive_bulk_cancel_sync(self, target_sat, module_manifest_org):
+    def test_positive_bulk_cancel_sync(self, target_sat, module_entitlement_manifest_org):
         """Bulk cancel 10+ repository syncs
 
         :id: f9bb1c95-d60f-4c93-b32e-09d58ebce80e
@@ -1386,28 +1364,28 @@ class TestRepositorySync:
         """
         repo_ids = []
         for repo in constants.BULK_REPO_LIST:
-            repo_id = enable_rhrepo_and_fetchid(
+            repo_id = target_sat.api_factory.enable_rhrepo_and_fetchid(
                 basearch='x86_64',
-                org_id=module_manifest_org.id,
+                org_id=module_entitlement_manifest_org.id,
                 product=repo['product'],
                 repo=repo['name'],
                 reposet=repo['reposet'],
                 releasever=repo['releasever'],
             )
             repo_ids.append(repo_id)
-            rh_repo = entities.Repository(id=repo_id).read()
+            rh_repo = target_sat.api.Repository(id=repo_id).read()
             rh_repo.download_policy = 'immediate'
             rh_repo = rh_repo.update()
         sync_ids = []
         for repo_id in repo_ids:
-            sync_task = entities.Repository(id=repo_id).sync(synchronous=False)
+            sync_task = target_sat.api.Repository(id=repo_id).sync(synchronous=False)
             sync_ids.append(sync_task['id'])
-        entities.ForemanTask().bulk_cancel(data={"task_ids": sync_ids[0:5]})
+        target_sat.api.ForemanTask().bulk_cancel(data={"task_ids": sync_ids[0:5]})
         # Give some time for sync cancels to calm down
         time.sleep(30)
-        entities.ForemanTask().bulk_cancel(data={"task_ids": sync_ids[5:]})
+        target_sat.api.ForemanTask().bulk_cancel(data={"task_ids": sync_ids[5:]})
         for sync_id in sync_ids:
-            sync_result = entities.ForemanTask(id=sync_id).poll(canceled=True)
+            sync_result = target_sat.api.ForemanTask(id=sync_id).poll(must_succeed=False)
             assert (
                 'Task canceled' in sync_result['humanized']['errors']
                 or 'No content added' in sync_result['humanized']['output']
@@ -1422,6 +1400,157 @@ class TestRepositorySync:
                 f'grep "{correlation_id}" /var/log/messages | grep "Canceling task"'
             )
             assert result.status == 0
+
+    @pytest.mark.tier2
+    @pytest.mark.parametrize(
+        'repo_options',
+        **parametrized([{'content_type': 'yum', 'url': repo_constants.CUSTOM_RPM_SHA}]),
+        indirect=True,
+    )
+    def test_positive_sync_sha_repo(self, repo, target_sat):
+        """Sync repository with 'sha' checksum, which uses 'sha1' in particular actually
+
+        :id: b842a21d-639a-48aa-baf3-9244d8bc1415
+
+        :parametrized: yes
+
+        :customerscenario: true
+
+        :BZ: 2024889
+
+        :SubComponent: Pulp
+        """
+        sync_result = repo.sync()
+        assert sync_result['result'] == 'success'
+        result = target_sat.execute(
+            'grep "Artifact() got an unexpected keyword argument" /var/log/messages'
+        )
+        assert result.status == 1
+
+    @pytest.mark.tier2
+    def test_positive_sync_repo_null_contents_changed(
+        self, module_entitlement_manifest_org, target_sat
+    ):
+        """test for null contents_changed parameter on actions::katello::repository::sync.
+
+        :id: f3923940-e097-4da3-aba7-b14dbcda857b
+
+        :expectedresults: After syncing a repo and running that null contents_changed
+            command, 0 rows should be returned(empty string)
+
+        :CaseImportance: High
+
+        :customerscenario: true
+
+        :BZ: 2089580
+
+        :CaseAutomation: Automated
+        """
+        repo_id = target_sat.api_factory.enable_rhrepo_and_fetchid(
+            basearch='x86_64',
+            org_id=module_entitlement_manifest_org.id,
+            product=constants.PRDS['rhel'],
+            repo=constants.REPOS['rhst7']['name'],
+            reposet=constants.REPOSET['rhst7'],
+            releasever=None,
+        )
+        target_sat.api.Repository(id=repo_id).sync()
+        prod_log_out = target_sat.execute(
+            'sudo -u postgres psql -d foreman -c "select class,execution_plan_uuid,input '
+            'from dynflow_actions where input LIKE \'%"contents_changed":null%\''
+            ' AND class = \'Actions::Katello::Repository::Sync\';"'
+        )
+        assert prod_log_out.status == 0
+        assert "(0 rows)" in prod_log_out.stdout
+
+    @pytest.mark.parametrize(
+        'distro',
+        [
+            ver
+            for ver in settings.supportability.content_hosts.rhel.versions
+            if isinstance(ver, int)
+        ],
+    )
+    def test_positive_sync_kickstart_check_os(
+        self, module_entitlement_manifest_org, distro, target_sat
+    ):
+        """Sync rhel KS repo and assert that OS was created
+
+        :id: f84bcf1b-717e-40e7-82ee-000eead45249
+
+        :Parametrized: Yes
+
+        :steps:
+            1. Enable and sync a kickstart repo.
+            2. Check that OS with corresponding version.
+
+        :expectedresults:
+            1. OS with corresponding version was created.
+
+        """
+        distro = f'rhel{distro} + "_bos"' if distro > 7 else f'rhel{distro}'
+        repo_id = target_sat.api_factory.enable_rhrepo_and_fetchid(
+            basearch='x86_64',
+            org_id=module_entitlement_manifest_org.id,
+            product=constants.REPOS['kickstart'][distro]['product'],
+            reposet=constants.REPOSET['kickstart'][distro],
+            repo=constants.REPOS['kickstart'][distro]['name'],
+            releasever=constants.REPOS['kickstart'][distro]['version'],
+        )
+        rh_repo = target_sat.api.Repository(id=repo_id).read()
+        rh_repo.sync()
+
+        major, minor = constants.REPOS['kickstart'][distro]['version'].split('.')
+        os = target_sat.api.OperatingSystem().search(
+            query={'search': f'name="RedHat" AND major="{major}" AND minor="{minor}"'}
+        )
+        assert len(os)
+
+    @pytest.mark.tier2
+    @pytest.mark.parametrize(
+        'repo_options',
+        **datafactory.parametrized(
+            {'yum': {'content_type': 'yum', 'unprotected': True, 'url': 'http://example.com'}}
+        ),
+        indirect=True,
+    )
+    def test_missing_content_id(self, repo, function_sca_manifest_org, target_sat):
+        """Handle several cases of missing content ID correctly
+
+        :id: f507790a-933b-4b3f-ac93-cade6967fbd2
+
+        :parametrized: yes
+
+        :setup:
+            1. Create product and repo, sync repo
+
+        :steps:
+            1. Try to update repo URL
+            2. Attempt to delete repo
+            3. Refresh manifest file
+
+        :expectedresults: Repo URL can be updated, repo can be deleted and manifest refresh works after repo delete
+
+        :BZ:2032040
+        """
+        # Wait for async metadata generate task to finish
+        time.sleep(5)
+        # Get rid of the URL
+        repo.url = ''
+        repo = repo.update(['url'])
+        assert repo.url is None
+        # Now change the URL back
+        repo.url = 'http://example.com'
+        repo = repo.update(['url'])
+        assert repo.url == 'http://example.com'
+        # Now delete the Repo
+        repo.delete()
+        with pytest.raises(HTTPError):
+            repo.read()
+        output = target_sat.cli.Subscription.refresh_manifest(
+            {'organization-id': function_sca_manifest_org.id}
+        )
+        assert 'Candlepin job status: SUCCESS' in output, 'Failed to refresh manifest'
 
 
 class TestDockerRepository:
@@ -1457,37 +1586,6 @@ class TestDockerRepository:
         for k in 'name', 'docker_upstream_name', 'content_type':
             assert getattr(repo, k) == repo_options[k]
 
-    @pytest.mark.tier1
-    @pytest.mark.parametrize(
-        'repo_options',
-        **datafactory.parametrized(
-            {
-                constants.CONTAINER_UPSTREAM_NAME: {
-                    'content_type': 'docker',
-                    'docker_upstream_name': constants.CONTAINER_UPSTREAM_NAME,
-                    'name': gen_string('alphanumeric', 10),
-                    'url': constants.CONTAINER_REGISTRY_HUB,
-                }
-            }
-        ),
-        indirect=True,
-    )
-    def test_positive_synchronize(self, repo):
-        """Create and sync a Docker-type repository
-
-        :id: 27653663-e5a7-4700-a3c1-f6eab6468adf
-
-        :parametrized: yes
-
-        :expectedresults: A repository is created with a Docker repository and
-            it is synchronized.
-
-        :CaseImportance: Critical
-        """
-        # TODO: add timeout support to sync(). This repo needs more than the default 300 seconds.
-        repo.sync()
-        assert repo.read().content_counts['docker_manifest'] >= 1
-
     @pytest.mark.tier3
     @pytest.mark.parametrize(
         'repo_options',
@@ -1505,7 +1603,7 @@ class TestDockerRepository:
         ),
         indirect=True,
     )
-    def test_positive_cancel_docker_repo_sync(self, repo):
+    def test_positive_cancel_docker_repo_sync(self, repo, target_sat):
         """Cancel a large, syncing Docker-type repository
 
         :id: 86534979-be49-40ad-8290-05ac71c801b2
@@ -1528,14 +1626,14 @@ class TestDockerRepository:
         sync_task = repo.sync(synchronous=False)
         # Need to wait for sync to actually start up
         time.sleep(2)
-        entities.ForemanTask().bulk_cancel(data={"task_ids": [sync_task['id']]})
-        sync_task = entities.ForemanTask(id=sync_task['id']).poll(canceled=True)
+        target_sat.api.ForemanTask().bulk_cancel(data={"task_ids": [sync_task['id']]})
+        sync_task = target_sat.api.ForemanTask(id=sync_task['id']).poll(must_succeed=False)
         assert 'Task canceled' in sync_task['humanized']['errors']
         assert 'No content added' in sync_task['humanized']['output']
 
     @pytest.mark.tier2
     @pytest.mark.parametrize(
-        'repo_options',
+        'repo_options_custom_product',
         **datafactory.parametrized(
             {
                 constants.CONTAINER_UPSTREAM_NAME: {
@@ -1548,7 +1646,9 @@ class TestDockerRepository:
         ),
         indirect=True,
     )
-    def test_positive_delete_product_with_synced_repo(self, repo, repo_options_custom_product):
+    def test_positive_delete_product_with_synced_repo(
+        self, repo_options_custom_product, target_sat
+    ):
         """Create and sync a Docker-type repository, delete the product.
 
         :id: c3d33836-54df-484d-97e1-f9fc9e22d23c
@@ -1563,7 +1663,8 @@ class TestDockerRepository:
 
         :BZ: 1867287
         """
-        repo.sync()
+        repo = target_sat.api.Repository(**repo_options_custom_product).create()
+        repo.sync(timeout=600)
         assert repo.read().content_counts['docker_manifest'] >= 1
         assert repo.product.delete()
 
@@ -1617,56 +1718,16 @@ class TestDockerRepository:
 
         :parametrized: yes
 
-        :expectedresults: A repository is created with a private Docker \
+        :expectedresults: A repository is created with a private Docker
             repository and it is synchronized.
 
         :customerscenario: true
 
         :BZ: 1475121
 
-        :CaseLevel: Integration
         """
         repo.sync()
         assert repo.read().content_counts['docker_manifest'] >= 1
-
-    @pytest.mark.tier2
-    @pytest.mark.parametrize(
-        'repo_options',
-        **datafactory.parametrized(
-            {
-                'private_registry': {
-                    'content_type': 'docker',
-                    'docker_upstream_name': settings.docker.private_registry_name,
-                    'name': gen_string('alpha'),
-                    'upstream_username': settings.docker.private_registry_username,
-                    'upstream_password': 'ThisIsaWrongPassword',
-                    'url': settings.docker.private_registry_url,
-                }
-            }
-        ),
-        indirect=True,
-    )
-    def test_negative_synchronize_private_registry_wrong_password(self, repo_options, repo):
-        """Create and try to sync a Docker-type repository from a private
-        registry providing wrong credentials the sync must fail with
-        reasonable error message.
-
-        :id: 2857fce2-fed7-49fc-be20-bf2e4726c9f5
-
-        :parametrized: yes
-
-        :expectedresults: A repository is created with a private Docker \
-            repository and sync fails with reasonable error message.
-
-        :customerscenario: true
-
-        :BZ: 1475121, 1580510
-
-        :CaseLevel: Integration
-        """
-        msg = "401, message=\'Unauthorized\'"
-        with pytest.raises(TaskFailedError, match=msg):
-            repo.sync()
 
     @pytest.mark.tier2
     @pytest.mark.parametrize(
@@ -1701,7 +1762,6 @@ class TestDockerRepository:
 
         :BZ: 1475121, 1580510
 
-        :CaseLevel: Integration
         """
         msg = "404, message=\'Not Found\'"
         with pytest.raises(TaskFailedError, match=msg):
@@ -1741,14 +1801,13 @@ class TestDockerRepository:
 
         :BZ: 1475121, 1580510
 
-        :CaseLevel: Integration
         """
         with pytest.raises(
             HTTPError,
             match='422 Client Error: Unprocessable Entity for url: '
             f'{target_sat.url}:443/katello/api/v2/repositories',
         ):
-            entities.Repository(**repo_options).create()
+            target_sat.api.Repository(**repo_options).create()
 
     @pytest.mark.tier2
     @pytest.mark.upgrade
@@ -1899,7 +1958,7 @@ class TestDockerRepository:
 #     @pytest.mark.parametrize(
 #         'repo_options',
 #         **datafactory.parametrized(
-#             [{'content_type': 'ostree', 'unprotected': False, 'url': FEDORA27_OSTREE_REPO}]
+#             [{'content_type': 'ostree', 'unprotected': False, 'url': FEDORA_OSTREE_REPO}]
 #         ),
 #         indirect=True,
 #     )
@@ -1923,7 +1982,7 @@ class TestDockerRepository:
 #     @pytest.mark.parametrize(
 #         'repo_options',
 #         **datafactory.parametrized(
-#             [{'content_type': 'ostree', 'unprotected': False, 'url': FEDORA27_OSTREE_REPO}]
+#             [{'content_type': 'ostree', 'unprotected': False, 'url': FEDORA_OSTREE_REPO}]
 #         ),
 #         indirect=True,
 #     )
@@ -1950,7 +2009,7 @@ class TestDockerRepository:
 #     @pytest.mark.parametrize(
 #         'repo_options',
 #         **datafactory.parametrized(
-#             [{'content_type': 'ostree', 'unprotected': False, 'url': FEDORA27_OSTREE_REPO}]
+#             [{'content_type': 'ostree', 'unprotected': False, 'url': OSTREE_REPO}]
 #         ),
 #         indirect=True,
 #     )
@@ -1965,7 +2024,7 @@ class TestDockerRepository:
 #
 #         :CaseImportance: Critical
 #         """
-#         new_url = FEDORA26_OSTREE_REPO
+#         new_url = FEDORA_OSTREE_REPO
 #         repo.url = new_url
 #         repo = repo.update(['url'])
 #         assert repo.url == new_url
@@ -1978,7 +2037,7 @@ class TestDockerRepository:
 #     @pytest.mark.parametrize(
 #         'repo_options',
 #         **datafactory.parametrized(
-#             [{'content_type': 'ostree', 'unprotected': False, 'url': FEDORA27_OSTREE_REPO}]
+#             [{'content_type': 'ostree', 'unprotected': False, 'url': FEDORA_OSTREE_REPO}]
 #         ),
 #         indirect=True,
 #     )
@@ -2009,13 +2068,11 @@ class TestDockerRepository:
 #
 #         :expectedresults: Synced repo should fetch the data successfully.
 #
-#         :CaseLevel: Integration
-#
 #         :customerscenario: true
 #
 #         :BZ: 1625783
 #         """
-#         with manifests.clone() as manifest:
+#         with clone() as manifest:
 #             upload_manifest(module_org.id, manifest.content)
 #         repo_id = enable_rhrepo_and_fetchid(
 #             org_id=module_org.id,
@@ -2025,7 +2082,7 @@ class TestDockerRepository:
 #             releasever=None,
 #             basearch=None,
 #         )
-#         call_entity_method_with_timeout(entities.Repository(id=repo_id).sync, timeout=1500)
+#         call_entity_method_with_timeout(target_sat.api.Repository(id=repo_id).sync, timeout=1500)
 
 
 class TestSRPMRepository:
@@ -2034,7 +2091,9 @@ class TestSRPMRepository:
     @pytest.mark.skip_if_open("BZ:2016047")
     @pytest.mark.upgrade
     @pytest.mark.tier2
-    def test_positive_srpm_upload_publish_promote_cv(self, module_org, env, repo):
+    def test_positive_srpm_upload_publish_promote_cv(
+        self, module_org, module_lce, repo, module_target_sat
+    ):
         """Upload SRPM to repository, add repository to content view
         and publish, promote content view
 
@@ -2042,24 +2101,31 @@ class TestSRPMRepository:
 
         :expectedresults: srpms can be listed in organization, content view, Lifecycle env
         """
-        entities.ContentUpload(repository=repo).upload(
-            filepath=get_data_file(constants.SRPM_TO_UPLOAD), content_type='srpm'
+        module_target_sat.api.ContentUpload(repository=repo).upload(
+            filepath=DataFile.SRPM_TO_UPLOAD,
+            content_type='srpm',
         )
 
-        cv = entities.ContentView(organization=module_org, repository=[repo]).create()
+        cv = module_target_sat.api.ContentView(organization=module_org, repository=[repo]).create()
         cv.publish()
         cv = cv.read()
 
         assert cv.repository[0].read().content_counts['srpm'] == 1
-        assert len(entities.Srpms().search(query={'organization_id': module_org.id})) >= 1
+        assert (
+            len(module_target_sat.api.Srpms().search(query={'organization_id': module_org.id})) >= 1
+        )
 
         assert (
-            len(entities.Srpms().search(query={'content_view_version_id': cv.version[0].id})) == 1
+            len(
+                module_target_sat.api.Srpms().search(
+                    query={'content_view_version_id': cv.version[0].id}
+                )
+            )
+            == 1
         )
 
     @pytest.mark.upgrade
     @pytest.mark.tier2
-    @pytest.mark.skip('Uses deprecated SRPM repository')
     @pytest.mark.skipif(
         (not settings.robottelo.REPOS_HOSTING_URL), reason='Missing repos_hosting_url'
     )
@@ -2068,7 +2134,7 @@ class TestSRPMRepository:
         **datafactory.parametrized({'fake_srpm': {'url': repo_constants.FAKE_YUM_SRPM_REPO}}),
         indirect=True,
     )
-    def test_positive_repo_sync_publish_promote_cv(self, module_org, env, repo):
+    def test_positive_repo_sync_publish_promote_cv(self, module_org, module_lce, repo, target_sat):
         """Synchronize repository with SRPMs, add repository to content view
         and publish, promote content view
 
@@ -2080,19 +2146,20 @@ class TestSRPMRepository:
         """
         repo.sync()
 
-        cv = entities.ContentView(organization=module_org, repository=[repo]).create()
+        cv = target_sat.api.ContentView(organization=module_org, repository=[repo]).create()
         cv.publish()
         cv = cv.read()
 
         assert cv.repository[0].read().content_counts['srpm'] == 3
-        assert len(entities.Srpms().search(query={'organization_id': module_org.id})) >= 3
+        assert len(target_sat.api.Srpms().search(query={'organization_id': module_org.id})) >= 3
 
         assert (
-            len(entities.Srpms().search(query={'content_view_version_id': cv.version[0].id})) >= 3
+            len(target_sat.api.Srpms().search(query={'content_view_version_id': cv.version[0].id}))
+            >= 3
         )
 
-        promote(cv.version[0], env.id)
-        assert len(entities.Srpms().search(query={'environment_id': env.id})) == 3
+        cv.version[0].promote(data={'environment_ids': module_lce.id, 'force': False})
+        assert len(target_sat.api.Srpms().search(query={'environment_id': module_lce.id})) >= 3
 
 
 class TestSRPMRepositoryIgnoreContent:
@@ -2101,13 +2168,11 @@ class TestSRPMRepositoryIgnoreContent:
     In particular sync of duplicate SRPMs would fail when using the flag
     ``ignorable_content``.
 
-    :CaseLevel: Integration
-
     :CaseComponent: Pulp
 
     :customerscenario: true
 
-    :Assignee: ltran
+    :team: Phoenix-content
 
     :BZ: 1673215
     """
@@ -2164,7 +2229,7 @@ class TestSRPMRepositoryIgnoreContent:
         """
         repo.sync()
         repo = repo.read()
-        assert repo.content_counts['srpm'] == 4
+        assert repo.content_counts['srpm'] == 2
 
     @pytest.mark.tier2
     @pytest.mark.skip('Uses deprecated SRPM repository')
@@ -2207,12 +2272,12 @@ class TestFileRepository:
         **parametrized([{'content_type': 'file', 'url': repo_constants.CUSTOM_FILE_REPO}]),
         indirect=True,
     )
-    def test_positive_upload_file_to_file_repo(self, repo):
+    def test_positive_upload_file_to_file_repo(self, repo, target_sat):
         """Check arbitrary file can be uploaded to File Repository
 
         :id: fdb46481-f0f4-45aa-b075-2a8f6725e51b
 
-        :Steps:
+        :steps:
             1. Create a File Repository
             2. Upload an arbitrary file to it
 
@@ -2222,33 +2287,14 @@ class TestFileRepository:
 
         :CaseAutomation: Automated
         """
-        with open(get_data_file(constants.RPM_TO_UPLOAD), 'rb') as handle:
+        with open(DataFile.FAKE_FILE_NEW_NAME, 'rb') as handle:
             repo.upload_content(files={'content': handle})
         assert repo.read().content_counts['file'] == 1
 
-        filesearch = entities.File().search(query={"search": f"name={constants.RPM_TO_UPLOAD}"})
-        assert constants.RPM_TO_UPLOAD == filesearch[0].name
-
-    @pytest.mark.stubbed
-    @pytest.mark.tier1
-    def test_positive_file_permissions(self):
-        """Check file permissions after file upload to File Repository
-
-        :id: 03b4b7dd-0505-4302-ae00-5de33ad420b0
-
-        :Setup:
-            1. Create a File Repository
-            2. Upload an arbitrary file to it
-
-        :Steps: Retrieve file permissions from File Repository
-
-        :expectedresults: uploaded file permissions are kept after upload
-
-        :CaseImportance: Critical
-
-        :CaseAutomation: NotAutomated
-        """
-        pass
+        filesearch = target_sat.api.File().search(
+            query={"search": f"name={constants.FAKE_FILE_NEW_NAME}"}
+        )
+        assert filesearch[0].name == constants.FAKE_FILE_NEW_NAME
 
     @pytest.mark.tier1
     @pytest.mark.upgrade
@@ -2257,7 +2303,7 @@ class TestFileRepository:
         **parametrized([{'content_type': 'file', 'url': repo_constants.CUSTOM_FILE_REPO}]),
         indirect=True,
     )
-    def test_positive_remove_file(self, repo):
+    def test_positive_remove_file(self, repo, target_sat):
         """Check arbitrary file can be removed from File Repository
 
         :id: 65068b4c-9018-4baa-b87b-b6e9d7384a5d
@@ -2266,7 +2312,7 @@ class TestFileRepository:
             1. Create a File Repository
             2. Upload an arbitrary file to it
 
-        :Steps: Remove a file from File Repository
+        :steps: Remove a file from File Repository
 
         :expectedresults: file is not listed under File Repository after
             removal
@@ -2275,90 +2321,13 @@ class TestFileRepository:
 
         :CaseAutomation: Automated
         """
-        with open(get_data_file(constants.RPM_TO_UPLOAD), 'rb') as handle:
-            repo.upload_content(files={'content': handle})
+        repo.upload_content(files={'content': DataFile.RPM_TO_UPLOAD.read_bytes()})
         assert repo.read().content_counts['file'] == 1
 
-        file_detail = entities.File().search(query={'repository_id': repo.id})
+        file_detail = target_sat.api.File().search(query={'repository_id': repo.id})
 
         repo.remove_content(data={'ids': [file_detail[0].id], 'content_type': 'file'})
         assert repo.read().content_counts['file'] == 0
-
-    @pytest.mark.stubbed
-    @pytest.mark.tier2
-    @pytest.mark.upgrade
-    def test_positive_remote_directory_sync(self):
-        """Check an entire remote directory can be synced to File Repository
-        through http
-
-        :id: 5c29b758-004a-4c71-a860-7087a0e96747
-
-        :Setup:
-            1. Create a directory to be synced with a pulp manifest on its root
-            2. Make the directory available through http
-
-        :Steps:
-            1. Create a File Repository with url pointing to http url
-                created on setup
-            2. Initialize synchronization
-
-
-        :expectedresults: entire directory is synced over http
-
-        :CaseAutomation: NotAutomated
-        """
-        pass
-
-    @pytest.mark.stubbed
-    @pytest.mark.tier1
-    def test_positive_local_directory_sync(self):
-        """Check an entire local directory can be synced to File Repository
-
-        :id: 178145e6-62e1-4cb9-b825-44d3ab41e754
-
-        :Setup:
-            1. Create a directory to be synced with a pulp manifest on its root
-                locally (on the Satellite/Foreman host)
-
-        :Steps:
-            1. Create a File Repository with url pointing to local url
-                created on setup
-            2. Initialize synchronization
-
-
-        :expectedresults: entire directory is synced
-
-        :CaseImportance: Critical
-
-        :CaseAutomation: NotAutomated
-        """
-        pass
-
-    @pytest.mark.stubbed
-    @pytest.mark.tier1
-    def test_positive_symlinks_sync(self):
-        """Check synlinks can be synced to File Repository
-
-        :id: 438a8e21-3502-4995-86db-c67ba0f3c469
-
-        :Setup:
-            1. Create a directory to be synced with a pulp manifest on its root
-                locally (on the Satellite/Foreman host)
-            2. Make sure it contains synlinks
-
-        :Steps:
-            1. Create a File Repository with url pointing to local url
-                created on setup
-            2. Initialize synchronization
-
-        :expectedresults: entire directory is synced, including files
-            referred by symlinks
-
-        :CaseImportance: Critical
-
-        :CaseAutomation: NotAutomated
-        """
-        pass
 
 
 @pytest.mark.skip_if_not_set('container_repo')
@@ -2369,11 +2338,13 @@ class TestTokenAuthContainerRepository:
 
     :CaseComponent: ContainerManagement-Content
 
-    :Assignee: addubey
+    :team: Phoenix-content
     """
 
     @pytest.mark.tier2
-    def test_positive_create_with_long_token(self, module_org, module_product, request):
+    def test_positive_create_with_long_token(
+        self, module_org, module_product, request, module_target_sat
+    ):
         """Create and sync Docker-type repo from the Red Hat Container registry
         Using token based auth, with very long tokens (>255 characters).
 
@@ -2394,6 +2365,17 @@ class TestTokenAuthContainerRepository:
             container_repo = container_repos[0]
         except IndexError:
             pytest.skip('No registries with "long_pass" set to true')
+
+        to_clean = []
+
+        @request.addfinalizer
+        def clean_repos():
+            for repo in to_clean:
+                try:
+                    repo.delete(synchronous=False)
+                except Exception:
+                    logger.exception(f'Exception cleaning up docker repo:\n{repo}')
+
         for docker_repo_name in container_repo.repos_to_sync:
             repo_options = dict(
                 content_type='docker',
@@ -2410,19 +2392,13 @@ class TestTokenAuthContainerRepository:
             if not len(repo_options['upstream_password']) > 255:
                 pytest.skip('The "long_pass" registry does not meet length requirement')
 
-            repo = entities.Repository(**repo_options).create()
-
-            @request.addfinalizer
-            def clean_repo():
-                try:
-                    repo.delete(synchronous=False)
-                except Exception:
-                    logger.exception('Exception cleaning up docker repo:')
+            repo = module_target_sat.api.Repository(**repo_options).create()
+            to_clean.append(repo)
 
             repo = repo.read()
             for field in 'name', 'docker_upstream_name', 'content_type', 'upstream_username':
                 assert getattr(repo, field) == repo_options[field]
-            repo.sync(timeout=600)
+            repo.sync(timeout=900)
             assert repo.read().content_counts['docker_manifest'] > 1
 
     try:
@@ -2432,7 +2408,9 @@ class TestTokenAuthContainerRepository:
 
     @pytest.mark.tier2
     @pytest.mark.parametrize('repo_key', container_repo_keys)
-    def test_positive_tag_whitelist(self, request, repo_key, module_org, module_product):
+    def test_positive_tag_whitelist(
+        self, request, repo_key, module_org, module_product, module_target_sat
+    ):
         """Create and sync Docker-type repos from multiple supported registries with a tag whitelist
 
         :id: 4f8ea85b-4c69-4da6-a8ef-bd467ee35147
@@ -2442,6 +2420,17 @@ class TestTokenAuthContainerRepository:
         :expectedresults: multiple products and repos are created
         """
         container_repo = getattr(settings.container_repo.registries, repo_key)
+
+        to_clean = []
+
+        @request.addfinalizer
+        def clean_repos():
+            for repo in to_clean:
+                try:
+                    repo.delete(synchronous=False)
+                except Exception:
+                    logger.exception(f'Exception cleaning up docker repo:\n{repo}')
+
         for docker_repo_name in container_repo.repos_to_sync:
             repo_options = dict(
                 content_type='docker',
@@ -2455,14 +2444,8 @@ class TestTokenAuthContainerRepository:
             repo_options['organization'] = module_org
             repo_options['product'] = module_product
 
-            repo = entities.Repository(**repo_options).create()
-
-            @request.addfinalizer
-            def clean_repo():
-                try:
-                    repo.delete(synchronous=False)
-                except Exception:
-                    logger.exception('Exception cleaning up docker repo:')
+            repo = module_target_sat.api.Repository(**repo_options).create()
+            to_clean.append(repo)
 
             for field in 'name', 'docker_upstream_name', 'content_type', 'upstream_username':
                 assert getattr(repo, field) == repo_options[field]

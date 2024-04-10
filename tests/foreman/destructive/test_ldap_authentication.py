@@ -4,44 +4,45 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Integration
+:CaseComponent: Authentication
 
-:CaseComponent: LDAP
-
-:Assignee: okhatavk
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import os
 from time import sleep
 
+from navmazing import NavigationTriesExceeded
 import pyotp
 import pytest
-from navmazing import NavigationTriesExceeded
 
-from robottelo.api.utils import create_role_permissions
 from robottelo.config import settings
-from robottelo.constants import CERT_PATH
-from robottelo.constants import LDAP_ATTR
-from robottelo.constants import PERMISSIONS
-from robottelo.datafactory import gen_string
-from robottelo.helpers import file_downloader
-from robottelo.rhsso_utils import create_group
-from robottelo.rhsso_utils import create_new_rhsso_user
-from robottelo.rhsso_utils import delete_rhsso_group
-from robottelo.rhsso_utils import delete_rhsso_user
-from robottelo.rhsso_utils import get_rhsso_client_id
-from robottelo.rhsso_utils import run_command
-from robottelo.rhsso_utils import update_rhsso_user
-from robottelo.utils.issue_handlers import is_open
+from robottelo.constants import CERT_PATH, HAMMER_CONFIG, HAMMER_SESSIONS, LDAP_ATTR
+from robottelo.exceptions import CLIReturnCodeError
+from robottelo.logging import logger
+from robottelo.utils.datafactory import gen_string
 
 pytestmark = [pytest.mark.destructive, pytest.mark.run_in_one_thread]
 
 EXTERNAL_GROUP_NAME = 'foobargroup'
+
+NO_KERB_MSG = 'There is no active Kerberos session. Have you run kinit?'
+AUTH_FAILED_MSG = (
+    'Could not authenticate using negotiation protocol\n  - have you run kinit (for Kerberos)?'
+)
+NO_SESSION_BUT_KERB_MSG = (
+    'No session, but there is an active Kerberos session, that will be used for negotiate login.'
+)
+AUTH_OK = 'Successfully authenticated using negotiate auth, using the KEYRING principal.'
+SESSION_OK = "Session exists, currently logged in as 'current Kerberos user'."
+ACCESS_DENIED = 'Access denied\nMissing one of the required permissions: view_hosts'
+NO_CREDS = 'Credentials are not configured.'  # status when user not logged in and creds not in conf
+USING_CREDS = (
+    'Using configured credentials for user'  # status when user not logged in and creds in conf
+)
+UNABLE_AUTH = 'Unable to authenticate user'  # attempting to do something without being logged in
 
 
 def set_certificate_in_satellite(server_type, sat, hostname=None):
@@ -49,12 +50,7 @@ def set_certificate_in_satellite(server_type, sat, hostname=None):
     if server_type == 'IPA':
         certfile = 'ipa.crt'
         idm_cert_path_url = os.path.join(settings.ipa.hostname, 'ipa/config/ca.crt')
-        file_downloader(
-            file_url=idm_cert_path_url,
-            local_path=CERT_PATH,
-            file_name=certfile,
-            hostname=sat.hostname,
-        )
+        sat.download_file(file_url=idm_cert_path_url, local_path=CERT_PATH, file_name=certfile)
     elif server_type == 'AD':
         certfile = 'satqe-QE-SAT6-AD-CA.cer'
         assert hostname is not None
@@ -79,7 +75,7 @@ def set_certificate_in_satellite(server_type, sat, hostname=None):
         raise AssertionError(f'Failed to restart the httpd after applying {server_type} cert')
 
 
-@pytest.fixture()
+@pytest.fixture
 def ldap_tear_down(module_target_sat):
     """Teardown the all ldap settings user, usergroup and ldap delete"""
     yield
@@ -91,14 +87,14 @@ def ldap_tear_down(module_target_sat):
         ldap_auth.delete()
 
 
-@pytest.fixture()
+@pytest.fixture
 def external_user_count(module_target_sat):
     """return the external auth source user count"""
     users = module_target_sat.api.User().search()
-    yield len([user for user in users if user.auth_source_name == 'External'])
+    return len([user for user in users if user.auth_source_name == 'External'])
 
 
-@pytest.fixture()
+@pytest.fixture
 def groups_teardown(module_target_sat):
     """teardown for groups created for external/remote groups"""
     yield
@@ -111,12 +107,24 @@ def groups_teardown(module_target_sat):
             user_groups[0].delete()
 
 
-@pytest.fixture()
-def rhsso_groups_teardown(module_target_sat):
+@pytest.fixture
+def rhsso_groups_teardown(module_target_sat, default_sso_host):
     """Teardown the rhsso groups"""
     yield
     for group_name in ('sat_users', 'sat_admins'):
-        delete_rhsso_group(group_name)
+        default_sso_host.delete_rhsso_group(group_name)
+
+
+@pytest.fixture
+def configure_hammer_session(parametrized_enrolled_sat, enable=True):
+    """Take backup of the hammer config file and enable use_sessions"""
+    parametrized_enrolled_sat.execute(f'cp {HAMMER_CONFIG} {HAMMER_CONFIG}.backup')
+    parametrized_enrolled_sat.execute(f"sed -i '/:use_sessions.*/d' {HAMMER_CONFIG}")
+    parametrized_enrolled_sat.execute(
+        f"echo '  :use_sessions: {'true' if enable else 'false'}' >> {HAMMER_CONFIG}"
+    )
+    yield
+    parametrized_enrolled_sat.execute(f'mv -f {HAMMER_CONFIG}.backup {HAMMER_CONFIG}')
 
 
 def generate_otp(secret):
@@ -126,7 +134,7 @@ def generate_otp(secret):
 
 
 @pytest.mark.upgrade
-@pytest.mark.parametrize('auth_data', ['AD_2016', 'AD_2019', 'IPA'], indirect=True)
+@pytest.mark.parametrize('auth_data', ['AD_2019', 'IPA'], indirect=True)
 def test_positive_create_with_https(
     session, module_subscribe_satellite, test_name, auth_data, ldap_tear_down, module_target_sat
 ):
@@ -190,13 +198,9 @@ def test_positive_create_with_https(
         assert ldap_source['ldap_server']['port'] == '636'
     with module_target_sat.ui_session(
         test_name, username, auth_data['ldap_user_passwd']
-    ) as ldapsession:
-        with pytest.raises(NavigationTriesExceeded):
-            ldapsession.user.search('')
-    users = module_target_sat.api.User().search(
-        query={'search': 'login="{}"'.format(auth_data['ldap_user_name'])}
-    )
-    assert users[0].login == auth_data['ldap_user_name']
+    ) as ldapsession, pytest.raises(NavigationTriesExceeded):
+        ldapsession.user.search('')
+    assert module_target_sat.api.User().search(query={'search': f'login="{username}"'})
 
 
 def test_single_sign_on_ldap_ipa_server(
@@ -212,39 +216,18 @@ def test_single_sign_on_ldap_ipa_server(
 
     :expectedresults: After single sign on user should redirected from /extlogin to /hosts page
 
+    :BZ: 1941997
     """
-    # register the satellite with IPA for single sign-on and update external auth
-    try:
-        run_command(cmd='subscription-manager repos --enable rhel-7-server-optional-rpms')
-        run_command(cmd='satellite-installer --foreman-ipa-authentication=true', timeout=800000)
-        run_command('satellite-maintain service restart', timeout=300000)
-        if is_open('BZ:1941997'):
-            curl_command = f'curl -k -u : --negotiate {target_sat.url}/users/extlogin'
-        else:
-            curl_command = f'curl -k -u : --negotiate {target_sat.url}/users/extlogin/'
-        result = run_command(curl_command)
-        assert 'redirected' in result
-        assert f'{target_sat.url}/hosts' in result
-        assert 'You are being' in result
-    finally:
-        # resetting the settings to default for external auth
-        run_command(cmd='satellite-installer --foreman-ipa-authentication=false', timeout=800000)
-        run_command('satellite-maintain service restart', timeout=300000)
-        run_command(
-            cmd=f'ipa service-del HTTP/{target_sat.hostname}',
-            hostname=settings.ipa.hostname,
-        )
-        run_command(
-            cmd=f'ipa host-del {target_sat.hostname}',
-            hostname=settings.ipa.hostname,
-        )
+    result = target_sat.execute(f'echo {settings.ipa.password} | kinit {settings.ipa.user}')
+    assert result.status == 0
+    result = target_sat.execute(f'curl -k -u : --negotiate {target_sat.url}/users/extlogin/')
+    assert 'redirected' in result.stdout
+    assert f'{target_sat.url}/hosts' in result.stdout
 
 
-@pytest.mark.parametrize(
-    'enroll_ad_and_configure_external_auth', ['AD_2016', 'AD_2019'], indirect=True
-)
+@pytest.mark.parametrize('func_enroll_ad_and_configure_external_auth', ['AD_2019'], indirect=True)
 def test_single_sign_on_ldap_ad_server(
-    subscribe_satellite, enroll_ad_and_configure_external_auth, target_sat
+    subscribe_satellite, func_enroll_ad_and_configure_external_auth, target_sat
 ):
     """Verify the single sign-on functionality with external authentication
 
@@ -254,41 +237,21 @@ def test_single_sign_on_ldap_ad_server(
 
     :steps: Assert single sign-on session user is directed to satellite instead of login page
 
-    :expectedresults: After single sign on, user should be redirected from /extlogin to /users page
-        using curl. It should navigate to user's profile page.(verify using url only)
+    :expectedresults: After single sign on, user should be redirected from /extlogin to /hosts page
+        using curl. It should navigate to hosts page. (verify using url only)
 
+    :BZ: 1941997
     """
-    # register the satellite with AD for single sign-on and update external auth
-    try:
-        # enable the foreman-ipa-authentication feature
-        target_sat.execute('satellite-installer --foreman-ipa-authentication=true', timeout=800000)
-        target_sat.execute('systemctl restart gssproxy.service')
-        target_sat.execute('systemctl enable gssproxy.service')
-
-        # restart the deamon and httpd services
-        httpd_service_content = (
-            '.include /lib/systemd/system/httpd.service\n[Service]' '\nEnvironment=GSS_USE_PROXY=1'
-        )
-        target_sat.execute(f'echo "{httpd_service_content}" > /etc/systemd/system/httpd.service')
-        target_sat.execute('systemctl daemon-reload && systemctl restart httpd.service')
-
-        # create the kerberos ticket for authentication
-        target_sat.execute(f'echo {settings.ldap.password} | kinit {settings.ldap.username}')
-        if is_open('BZ:1941997'):
-            curl_command = f'curl -k -u : --negotiate {target_sat.url}/users/extlogin'
-        else:
-            curl_command = f'curl -k -u : --negotiate {target_sat.url}/users/extlogin/'
-        result = target_sat.execute(curl_command)
-        assert 'redirected' in result
-        assert f'{target_sat.url}/hosts' in result
-    finally:
-        # resetting the settings to default for external auth
-        target_sat.execute('satellite-installer --foreman-ipa-authentication=false', timeout=800000)
-        target_sat.execute('satellite-maintain service restart', timeout=300000)
+    # create the kerberos ticket for authentication
+    result = target_sat.execute(f'echo {settings.ldap.password} | kinit {settings.ldap.username}')
+    assert result.status == 0
+    result = target_sat.execute(f'curl -k -u : --negotiate {target_sat.url}/users/extlogin/')
+    assert 'redirected' in result.stdout
+    assert f'{target_sat.url}/hosts' in result.stdout
 
 
 def test_single_sign_on_using_rhsso(
-    module_subscribe_satellite, rhsso_setting_setup, enable_external_auth_rhsso, module_target_sat
+    enable_external_auth_rhsso, rhsso_setting_setup, module_target_sat
 ):
     """Verify the single sign-on functionality with external authentication RH-SSO
 
@@ -313,7 +276,7 @@ def test_single_sign_on_using_rhsso(
         assert settings.rhsso.rhsso_user in actual_user
 
 
-def test_external_logout_rhsso(enable_external_auth_rhsso, rhsso_setting_setup, module_target_sat):
+def test_external_logout_rhsso(rhsso_setting_setup, enable_external_auth_rhsso, module_target_sat):
     """Verify the external logout page navigation with external authentication RH-SSO
 
     :id: 87b5e08e-69c6-11ea-8126-e74d80ea4308
@@ -341,7 +304,11 @@ def test_external_logout_rhsso(enable_external_auth_rhsso, rhsso_setting_setup, 
 
 
 def test_session_expire_rhsso_idle_timeout(
-    enable_external_auth_rhsso, rhsso_setting_setup_with_timeout, module_target_sat
+    rhsso_setting_setup,
+    enable_external_auth_rhsso,
+    rhsso_setting_setup_with_timeout,
+    module_target_sat,
+    default_sso_host,
 ):
     """Verify the idle session expiration timeout with external authentication RH-SSO
 
@@ -360,14 +327,18 @@ def test_session_expire_rhsso_idle_timeout(
         session.rhsso_login.login(
             {'username': settings.rhsso.rhsso_user, 'password': settings.rhsso.rhsso_password}
         )
-        sleep(360)
+        sleep(60)
         with pytest.raises(NavigationTriesExceeded) as error:
             session.task.read_all(widget_names='current_user')['current_user']
         assert error.typename == 'NavigationTriesExceeded'
 
 
 def test_external_new_user_login_and_check_count_rhsso(
-    enable_external_auth_rhsso, external_user_count, rhsso_setting_setup, module_target_sat
+    enable_external_auth_rhsso,
+    rhsso_setting_setup,
+    external_user_count,
+    module_target_sat,
+    default_sso_host,
 ):
     """Verify the external new user login and verify the external user count
 
@@ -386,8 +357,8 @@ def test_external_new_user_login_and_check_count_rhsso(
     :expectedresults: New User created in RHSSO server should able to get log-in
         and correct count shown for external users
     """
-    client_id = get_rhsso_client_id()
-    user_details = create_new_rhsso_user(client_id)
+    client_id = default_sso_host.get_rhsso_client_id()
+    user_details = default_sso_host.create_new_rhsso_user(client_id)
     login_details = {
         'username': user_details['username'],
         'password': settings.rhsso.rhsso_password,
@@ -400,21 +371,22 @@ def test_external_new_user_login_and_check_count_rhsso(
     updated_count = len([user for user in users if user.auth_source_name == 'External'])
     assert updated_count == external_user_count + 1
     # checking delete user can't login anymore
-    delete_rhsso_user(user_details['username'])
+    default_sso_host.delete_rhsso_user(user_details['username'])
     with module_target_sat.ui_session(login=False) as rhsso_session:
         with pytest.raises(NavigationTriesExceeded) as error:
             rhsso_session.rhsso_login.login(login_details)
+        with pytest.raises(NavigationTriesExceeded) as error:
             rhsso_session.task.read_all()
         assert error.typename == 'NavigationTriesExceeded'
 
 
-@pytest.mark.skip_if_open("BZ:1873439")
 def test_login_failure_rhsso_user_if_internal_user_exist(
-    enable_external_auth_rhsso,
     rhsso_setting_setup,
+    enable_external_auth_rhsso,
     module_org,
     module_location,
     module_target_sat,
+    default_sso_host,
 ):
     """Verify the failure of login for the external rhsso user in case same username
     internal user exists
@@ -434,7 +406,6 @@ def test_login_failure_rhsso_user_if_internal_user_exist(
 
     :expectedresults: external rhsso user should not able to login with same username as internal
     """
-    client_id = get_rhsso_client_id()
     username = gen_string('alpha')
     module_target_sat.api.User(
         admin=True,
@@ -443,7 +414,7 @@ def test_login_failure_rhsso_user_if_internal_user_exist(
         login=username,
         password=settings.rhsso.rhsso_password,
     ).create()
-    external_rhsso_user = create_new_rhsso_user(client_id, username=username)
+    external_rhsso_user = default_sso_host.create_new_rhsso_user(username=username)
     login_details = {
         'username': external_rhsso_user['username'],
         'password': settings.rhsso.rhsso_password,
@@ -451,17 +422,19 @@ def test_login_failure_rhsso_user_if_internal_user_exist(
     with module_target_sat.ui_session(login=False) as rhsso_session:
         with pytest.raises(NavigationTriesExceeded) as error:
             rhsso_session.rhsso_login.login(login_details)
+        with pytest.raises(NavigationTriesExceeded) as error:
             rhsso_session.task.read_all()
         assert error.typename == 'NavigationTriesExceeded'
 
 
 def test_user_permissions_rhsso_user_after_group_delete(
-    enable_external_auth_rhsso,
     rhsso_setting_setup,
+    enable_external_auth_rhsso,
     session,
     module_org,
     module_location,
     module_target_sat,
+    default_sso_host,
 ):
     """Verify the rhsso user permissions in satellite should get revoked after the
         termination of rhsso user's external rhsso group
@@ -478,8 +451,8 @@ def test_user_permissions_rhsso_user_after_group_delete(
 
     :expectedresults: external rhsso user's permissions should get revoked after external rhsso
         group deletion.
-
     """
+    default_sso_host.get_rhsso_client_id()
     username = settings.rhsso.rhsso_user
     location_name = gen_string('alpha')
     login_details = {
@@ -488,13 +461,13 @@ def test_user_permissions_rhsso_user_after_group_delete(
     }
 
     group_name = gen_string('alpha')
-    create_group(group_name=group_name)
-    update_rhsso_user(username, group_name=group_name)
+    default_sso_host.create_group(group_name=group_name)
+    default_sso_host.update_rhsso_user(username, group_name=group_name)
 
     # creating satellite external group
-    user_group = module_target_sat.cli_factory.make_usergroup({'admin': 1, 'name': group_name})
+    user_group = module_target_sat.cli_factory.usergroup({'admin': 1, 'name': group_name})
     external_auth_source = module_target_sat.cli.ExternalAuthSource.info({'name': "External"})
-    module_target_sat.cli_factory.make_usergroup_external(
+    module_target_sat.cli_factory.usergroup_external(
         {
             'auth-source-id': external_auth_source['id'],
             'user-group-id': user_group['id'],
@@ -511,7 +484,7 @@ def test_user_permissions_rhsso_user_after_group_delete(
         assert login_details['username'] in current_user
 
     # delete the rhsso group and verify the rhsso-user permissions
-    delete_rhsso_group(group_name=group_name)
+    default_sso_host.delete_rhsso_group(group_name=group_name)
     with module_target_sat.ui_session(login=False) as rhsso_session:
         rhsso_session.rhsso_login.login(login_details)
         with pytest.raises(NavigationTriesExceeded) as error:
@@ -520,14 +493,15 @@ def test_user_permissions_rhsso_user_after_group_delete(
 
 
 def test_user_permissions_rhsso_user_multiple_group(
-    enable_external_auth_rhsso,
     rhsso_setting_setup,
+    enable_external_auth_rhsso,
     session,
     module_org,
     module_location,
     groups_teardown,
     rhsso_groups_teardown,
     module_target_sat,
+    default_sso_host,
 ):
     """Verify the permissions of the rhsso user, if it exists in multiple groups (admin/non-admin).
         The rhsso user should contain the highest level of permissions from among the
@@ -546,28 +520,33 @@ def test_user_permissions_rhsso_user_multiple_group(
     :expectedresults: external rhsso user have highest level of permissions from among the
         multiple groups.
     """
+    default_sso_host.get_rhsso_client_id()
     username = settings.rhsso.rhsso_user
     location_name = gen_string('alpha')
     login_details = {
         'username': username,
         'password': settings.rhsso.rhsso_password,
     }
-    user_permissions = {'Katello::ActivationKey': PERMISSIONS['Katello::ActivationKey']}
     katello_role = module_target_sat.api.Role().create()
-    create_role_permissions(katello_role, user_permissions)
+    module_target_sat.api.Filter(
+        role=katello_role,
+        permission=module_target_sat.api.Permission().search(
+            query={'search': 'resource_type="Katello::ActivationKey"'}
+        ),
+    ).create()
 
     group_names = ['sat_users', 'sat_admins']
-    arguments = [{'role': katello_role}, {'admin': 1}]
+    arguments = [{'roles': katello_role.name}, {'admin': 1}]
     external_auth_source = module_target_sat.cli.ExternalAuthSource.info({'name': "External"})
-    for group_name, argument in zip(group_names, arguments):
+    for group_name, argument in zip(group_names, arguments, strict=True):
         # adding/creating rhsso groups
-        create_group(group_name=group_name)
-        update_rhsso_user(username, group_name=group_name)
+        default_sso_host.create_group(group_name=group_name)
+        default_sso_host.update_rhsso_user(username, group_name=group_name)
         argument['name'] = group_name
 
         # creating satellite external groups
-        user_group = module_target_sat.cli_factory.make_usergroup(argument)
-        module_target_sat.cli_factory.make_usergroup_external(
+        user_group = module_target_sat.cli_factory.usergroup(argument)
+        module_target_sat.cli_factory.usergroup_external(
             {
                 'auth-source-id': external_auth_source['id'],
                 'user-group-id': user_group['id'],
@@ -629,7 +608,6 @@ def test_permissions_external_ldap_mapped_rhsso_group(
 
     :expectedresults: The external ldap mapped rhsso user should contain the permissions
         based on the user group level
-
     """
     ad_data = ad_data()
     login_details = {
@@ -650,3 +628,430 @@ def test_permissions_external_ldap_mapped_rhsso_group(
         totp = generate_otp(secret=settings.rhsso.totp_secret)
         rhsso_session.rhsso_login.login(login_details, totp={'totp': totp})
         assert rhsso_session.user.search(ad_data['ldap_user_name']) is not None
+
+
+def test_negative_negotiate_login_without_ticket(
+    parametrized_enrolled_sat,
+    configure_ipa_api,
+    configure_hammer_negotiate,
+):
+    """Verify that login nor other hammer commands work without
+    the Kerberos ticket and proper messages are displayed.
+
+    :id: 5815ba45-7e77-4390-b350-483ee853ab90
+
+    :parametrized: yes
+
+    :setup: Enroll the AD Configuration for External Authentication
+
+    :steps:
+        1. Check auth status.
+        2. Try to negotiate login without Kerberos ticket.
+        3. Try to list hosts.
+
+    :expectedresults:
+        1. Proper messages are returned in all cases.
+        2. Login and hosts listing fails without Kerberos ticket.
+    """
+    result = parametrized_enrolled_sat.cli.Auth.status()
+    assert NO_KERB_MSG in str(result)
+
+    with pytest.raises(CLIReturnCodeError) as context:
+        parametrized_enrolled_sat.cli.AuthLogin.negotiate()
+    assert AUTH_FAILED_MSG in context.value.message
+
+    with pytest.raises(CLIReturnCodeError) as context:
+        parametrized_enrolled_sat.cli.Host.list()
+    assert AUTH_FAILED_MSG in context.value.message
+
+
+def test_positive_negotiate_login_with_ticket(
+    request,
+    parametrized_enrolled_sat,
+    configure_ipa_api,
+    configure_hammer_negotiate,
+    sessions_tear_down,
+):
+    """Verify that we are able to log in, user is created but access restricted.
+
+    :id: 87ebbb79-f2b8-4fbc-83af-6358b2f0749f
+
+    :parametrized: yes
+
+    :setup: Enroll the AD Configuration for External Authentication
+
+    :steps:
+        1. Get Kerberos ticket, check for status.
+        2. Log in using the ticket, check it succeeds.
+        3. Verify an external user is created without permissions and enforcing works.
+
+    :expectedresults:
+        1. Kerberos ticket can be acquired.
+        2. Negotiate login works with the ticket.
+        3. External user is created and permissions enforcing works.
+        4. Proper messages are returned in all cases.
+    """
+    auth_type = request.node.callspec.params['parametrized_enrolled_sat']
+    user = (
+        settings.ipa.user
+        if 'IDM' in auth_type
+        else f'{settings.ldap.username}@{settings.ldap.realm}'
+    )
+    password = settings.ipa.password if 'IDM' in auth_type else settings.ldap.password
+
+    result = parametrized_enrolled_sat.execute(f'echo {password} | kinit {user}')
+    assert result.status == 0
+    result = parametrized_enrolled_sat.execute('klist')
+    assert f'Default principal: {user}' in result.stdout
+    result = parametrized_enrolled_sat.cli.Auth.status()
+    assert NO_SESSION_BUT_KERB_MSG in str(result)
+
+    # Log in and check for status
+    result = parametrized_enrolled_sat.cli.AuthLogin.negotiate()
+    assert AUTH_OK in str(result)
+    result = parametrized_enrolled_sat.cli.Auth.status()
+    assert SESSION_OK in str(result)
+
+    # Check the user was created in the Satellite without any permissions
+    user = parametrized_enrolled_sat.api.User().search(query={'search': f'login={user.lower()}'})
+    assert len(user) == 1
+    user = user[0].read()
+    assert user.auth_source_name == 'External'
+    assert not user.admin
+    assert len(user.role) == 0
+
+    # Check permission enforcing works for the new user
+    with pytest.raises(CLIReturnCodeError) as context:
+        parametrized_enrolled_sat.cli.Host.list()
+    assert ACCESS_DENIED in context.value.message
+
+
+def test_positive_negotiate_CRUD(
+    request,
+    parametrized_enrolled_sat,
+    configure_ipa_api,
+    configure_hammer_negotiate,
+    sessions_tear_down,
+):
+    """Verify that basic CRUD operations work with hammer.
+
+    :id: 2f3bd6d3-3fb6-4f53-9ee0-68ed4f3ebb7f
+
+    :parametrized: yes
+
+    :setup: Enroll the AD Configuration for External Authentication
+
+    :steps:
+        1. Get Kerberos ticket, check for status.
+        2. Add permissions to the new user.
+        3. Perform listing and CRUD operations via hammer.
+        4. Remove permissions from the user.
+
+    :expectedresults:
+        1. Kerberos ticket can be acquired.
+        2. Automatic login occurs on first hammer command.
+        3. Listing and CRUD operations via hammer succeed.
+
+    :BZ: 2122617
+    """
+    auth_type = request.node.callspec.params['parametrized_enrolled_sat']
+    user = (
+        settings.ipa.user
+        if 'IDM' in auth_type
+        else f'{settings.ldap.username}@{settings.ldap.realm}'
+    )
+    password = settings.ipa.password if 'IDM' in auth_type else settings.ldap.password
+
+    result = parametrized_enrolled_sat.execute(f'echo {password} | kinit {user}')
+    assert result.status == 0
+
+    # Add the permissions for CRUD operations
+    user = parametrized_enrolled_sat.api.User().search(query={'search': f'login={user.lower()}'})[0]
+    role = parametrized_enrolled_sat.api.Role().search(query={'search': 'name="Manager"'})[0]
+    user.role = [role]
+    user.update(['role'])
+
+    # Check that listing and automatic login on first hammer
+    # command (when Kerberos ticket exists) succeeds.
+    result = parametrized_enrolled_sat.cli.Architecture.list()
+    assert len(result)
+    result = parametrized_enrolled_sat.cli.Auth.status()
+    assert SESSION_OK in str(result)
+
+    # Create
+    name = gen_string('alphanumeric')
+    arch = parametrized_enrolled_sat.cli.Architecture.create({'name': name})
+
+    # Read
+    arch_read = parametrized_enrolled_sat.cli.Architecture.info({'name': name})
+    assert arch_read == arch
+
+    # Update
+    new_name = gen_string('alphanumeric')
+    result = parametrized_enrolled_sat.cli.Architecture.update({'name': name, 'new-name': new_name})
+    assert 'updated' in str(result)
+    arch_read = parametrized_enrolled_sat.cli.Architecture.info({'name': new_name})
+    assert arch_read['name'] == new_name
+
+    # Delete
+    result = parametrized_enrolled_sat.cli.Architecture.delete({'name': new_name})
+    assert 'deleted' in result
+    with pytest.raises(CLIReturnCodeError) as context:
+        parametrized_enrolled_sat.cli.Architecture.info({'name': new_name})
+    assert 'not found' in context.value.message
+
+    # Remove the permissions
+    user.role = []
+    user.update(['role'])
+
+
+def test_positive_negotiate_logout(
+    request,
+    parametrized_enrolled_sat,
+    configure_ipa_api,
+    configure_hammer_negotiate,
+    sessions_tear_down,
+):
+    """Verify the logout behaves properly.
+
+    :id: 30baeea2-b07f-468f-8c26-58d59c118742
+
+    :parametrized: yes
+
+    :setup: Enroll the AD Configuration for External Authentication
+
+    :steps:
+        1. Get Kerberos ticket and log in.
+        2. Log out and check the session was closed properly.
+        3. Verify that next hammer command fails.
+
+    :expectedresults:
+        1. Session is closed on log out properly on logout.
+        2. Hammer command fails after log out.
+        3. Proper messages are returned in all cases.
+    """
+    auth_type = request.node.callspec.params['parametrized_enrolled_sat']
+    user = (
+        settings.ipa.user
+        if 'IDM' in auth_type
+        else f'{settings.ldap.username}@{settings.ldap.realm}'
+    )
+    password = settings.ipa.password if 'IDM' in auth_type else settings.ldap.password
+
+    result = parametrized_enrolled_sat.execute(f'echo {password} | kinit {user}')
+    assert result.status == 0
+    result = parametrized_enrolled_sat.cli.AuthLogin.negotiate()
+    assert AUTH_OK in str(result)
+
+    # Log out, verify the hammer sessions was closed
+    result = parametrized_enrolled_sat.cli.Auth.logout()
+    assert 'Logged out.' in str(result)
+    result = parametrized_enrolled_sat.execute(
+        f'cat {HAMMER_SESSIONS}/https_{parametrized_enrolled_sat.hostname}'
+    )
+    assert '"id":null' in result.stdout
+    result = parametrized_enrolled_sat.cli.Auth.status()
+    assert NO_SESSION_BUT_KERB_MSG in str(result)
+
+    # Destroy the ticket so no new session is open
+    # and verify that hammer command cannot pass
+    parametrized_enrolled_sat.execute('kdestroy')
+    with pytest.raises(CLIReturnCodeError) as context:
+        parametrized_enrolled_sat.cli.Host.list()
+    assert AUTH_FAILED_MSG in context.value.message
+
+
+@pytest.mark.parametrize(
+    ('parametrized_enrolled_sat', 'user_not_exists'),
+    [('IDM', settings.ipa.user), ('AD', f'{settings.ldap.username}@{settings.ldap.realm.lower()}')],
+    indirect=True,
+    ids=['IDM', 'AD'],
+)
+def test_positive_autonegotiate(
+    request,
+    parametrized_enrolled_sat,
+    configure_ipa_api,
+    configure_hammer_negotiate,
+    sessions_tear_down,
+    user_not_exists,
+    hammer_logout,
+):
+    """Verify that when logged out, negotiation happens automatically with ticket
+
+    :id: 2f3bd6d3-3fb6-4f53-7ee0-68bd4faebb7f
+
+    :parametrized: yes
+
+    :setup: Kerberized sat with API krb authn and autonegotiation enabled
+
+    :steps:
+        1. Get Kerberos ticket, check for status.
+        2. Attempt to do some API operation.
+
+    :expectedresults:
+        1. Kerberos ticket can be acquired.
+        2. Automatic login occurs on first hammer command, user is created
+    """
+    auth_type = request.node.callspec.params['parametrized_enrolled_sat']
+    user = (
+        settings.ipa.user
+        if 'IDM' in auth_type
+        else f'{settings.ldap.username}@{settings.ldap.realm}'
+    )
+    password = settings.ipa.password if 'IDM' in auth_type else settings.ldap.password
+
+    result = parametrized_enrolled_sat.execute(f'echo {password} | kinit {user}')
+    assert result.status == 0
+
+    # Try to do an operation with user not yet added.
+    # Expect the user to get added and access denied.
+    with pytest.raises(CLIReturnCodeError) as exc:
+        result = parametrized_enrolled_sat.cli.Host.list()
+    assert ACCESS_DENIED in exc.value.stderr
+    user = parametrized_enrolled_sat.api.User().search(query={'search': f'login={user.lower()}'})
+    assert len(user) == 1
+    user = user[0].read()
+    assert user.auth_source_name == 'External'
+    assert not user.admin
+    assert len(user.role) == 0
+
+
+@pytest.mark.parametrize(
+    ('parametrized_enrolled_sat', 'user_not_exists'),
+    [('IDM', settings.ipa.user), ('AD', f'{settings.ldap.username}@{settings.ldap.realm.lower()}')],
+    indirect=True,
+    ids=['IDM', 'AD'],
+)
+def test_positive_negotiate_manual_with_autonegotiation_disabled(
+    request,
+    parametrized_enrolled_sat,
+    configure_ipa_api,
+    configure_hammer_no_negotiate,
+    configure_hammer_no_creds,
+    configure_hammer_session,
+    sessions_tear_down,
+    user_not_exists,
+    hammer_logout,
+):
+    """Negotiation works manually when autonegotiation is disabled.
+
+    :id: 87ebbb79-c2b8-4fbc-83af-6358b2f0749d
+
+    :parametrized: yes
+
+    :setup: Kerberized sat with API krb authn and autonegotiation enabled
+
+    :steps:
+        1. Get Kerberos ticket, check for status.
+        2. Log in manually using the ticket.
+        3. Attempt to do some API operation.
+
+    :expectedresults:
+        1. Kerberos ticket can be acquired.
+        2. Manual login successful, user is created.
+        3. Session is kept for following Hammer commands.
+    """
+    with parametrized_enrolled_sat.omit_credentials():
+        auth_type = request.node.callspec.params['parametrized_enrolled_sat']
+        user = (
+            settings.ipa.user
+            if 'IDM' in auth_type
+            else f'{settings.ldap.username}@{settings.ldap.realm}'
+        )
+        password = settings.ipa.password if 'IDM' in auth_type else settings.ldap.password
+
+        result = parametrized_enrolled_sat.execute(f'echo {password} | kinit {user}')
+        assert result.status == 0
+        result = parametrized_enrolled_sat.execute('klist')
+        assert f'Default principal: {user}' in result.stdout
+        result = parametrized_enrolled_sat.cli.Auth.status()
+        # negotiation disabled so no mention of Kerberos
+        assert NO_CREDS in str(result)
+
+        # Log in and check for status
+        result = parametrized_enrolled_sat.cli.AuthLogin.negotiate()
+        assert AUTH_OK in str(result)
+        result = parametrized_enrolled_sat.cli.Auth.status()
+        assert SESSION_OK in str(result)
+
+        # Check the user was created in the Satellite without any permissions
+        users = parametrized_enrolled_sat.api.User().search(
+            query={'search': f'login={user.lower()}'}
+        )
+        logger.info(f'Users after login: {users}')
+        assert len(users) == 1
+        user = users[0].read()
+        assert user.auth_source_name == 'External'
+        assert not user.admin
+        assert len(user.role) == 0
+
+        # Check permission enforcing works for the new user
+        with pytest.raises(CLIReturnCodeError) as exc:
+            parametrized_enrolled_sat.cli.Host.list()
+        assert ACCESS_DENIED in exc.value.message
+
+
+@pytest.mark.parametrize(
+    'configure_hammer_session',
+    [True, False],
+    indirect=True,
+    ids=['sessions_enabled', 'sessions_disabled'],
+)
+@pytest.mark.parametrize(
+    ('parametrized_enrolled_sat', 'user_not_exists'),
+    [('IDM', settings.ipa.user), ('AD', f'{settings.ldap.username}@{settings.ldap.realm.lower()}')],
+    indirect=True,
+    ids=['IDM', 'AD'],
+)
+def test_negative_autonegotiate_with_autonegotiation_disabled(
+    request,
+    parametrized_enrolled_sat,
+    configure_ipa_api,
+    configure_hammer_no_negotiate,
+    configure_hammer_no_creds,
+    configure_hammer_session,
+    sessions_tear_down,
+    user_not_exists,
+    hammer_logout,
+):
+    """Autonegotiation doesn't occur when it's disabled
+
+    :id: 87ebbb79-f5b8-4fbc-83af-6358b2f0749e
+
+    :parametrized: yes
+
+    :setup: Kerberized sat with API krb authn and autonegotiation enabled
+
+    :steps:
+        1. Get Kerberos ticket, check for status.
+        2. Attempt to do some API operation.
+
+    :expectedresults:
+        1. Kerberos ticket can be acquired.
+        2. Autonegotiation doesn't occur
+        3. Action is denied and user not created because the user isn't authenticated.
+    """
+    with parametrized_enrolled_sat.omit_credentials():
+        auth_type = request.node.callspec.params['parametrized_enrolled_sat']
+        user = (
+            settings.ipa.user
+            if 'IDM' in auth_type
+            else f'{settings.ldap.username}@{settings.ldap.realm}'
+        )
+        password = settings.ipa.password if 'IDM' in auth_type else settings.ldap.password
+
+        result = parametrized_enrolled_sat.execute(f'echo {password} | kinit {user}')
+        assert result.status == 0
+        result = parametrized_enrolled_sat.execute('klist')
+        assert f'Default principal: {user}' in result.stdout
+        result = parametrized_enrolled_sat.cli.Auth.status()
+        # negotiation disabled so no mention of Kerberos
+        assert NO_CREDS in str(result)
+
+        # Attempt to do something using autonegotiate. It should fail since it is disabled.
+        with pytest.raises(CLIReturnCodeError) as exc:
+            parametrized_enrolled_sat.cli.Host.list()
+        assert UNABLE_AUTH in exc.value.message
+        # User has not been added
+        user = parametrized_enrolled_sat.api.User().search(query={'search': f'login={user}'})
+        assert not user

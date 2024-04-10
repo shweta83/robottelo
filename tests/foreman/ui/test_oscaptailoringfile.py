@@ -4,34 +4,28 @@
 
 :CaseAutomation: Automated
 
-:CaseLevel: Acceptance
-
 :CaseComponent: SCAPPlugin
 
-:Assignee: jpathan
-
-:TestType: Functional
+:Team: Endeavour
 
 :CaseImportance: High
 
-:Upstream: No
 """
 import pytest
-from nailgun import entities
 
-from robottelo.datafactory import gen_string
+from robottelo.utils.datafactory import gen_string
 
 
 @pytest.mark.tier1
 @pytest.mark.upgrade
-def test_positive_end_to_end(session, tailoring_file_path, default_org, default_location):
+def test_positive_end_to_end(
+    session, tailoring_file_path, default_org, default_location, module_target_sat
+):
     """Perform end to end testing for tailoring file component
 
     :id: 9aebccb8-6837-4583-8a8a-8883480ab688
 
     :expectedresults: All expected CRUD actions finished successfully
-
-    :CaseLevel: Integration
     """
     name = gen_string('alpha')
     new_name = gen_string('alpha')
@@ -51,7 +45,7 @@ def test_positive_end_to_end(session, tailoring_file_path, default_org, default_
         assert tailroingfile_values['file_upload']['name'] == name
         assert (
             tailroingfile_values['file_upload']['uploaded_scap_file']
-            == tailoring_file_path['local'].rsplit('/', 1)[-1]
+            == str(tailoring_file_path['local']).rsplit('/', 1)[-1]
         )
         assert default_org.name in tailroingfile_values['organizations']['resources']['assigned']
         assert default_location.name in tailroingfile_values['locations']['resources']['assigned']
@@ -59,7 +53,9 @@ def test_positive_end_to_end(session, tailoring_file_path, default_org, default_
         assert session.oscaptailoringfile.search(new_name)[0]['Name'] == new_name
         assert not session.oscaptailoringfile.search(name)
         session.oscaptailoringfile.delete(new_name)
-        assert not entities.TailoringFile().search(query={'search': f'name={new_name}'})
+        assert not module_target_sat.api.TailoringFile().search(
+            query={'search': f'name={new_name}'}
+        )
 
 
 @pytest.mark.tier2
