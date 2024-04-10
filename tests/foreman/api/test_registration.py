@@ -220,7 +220,7 @@ def test_negative_global_registration_without_ak(module_target_sat):
     """
     with pytest.raises(HTTPError) as context:
         module_target_sat.api.RegistrationCommand().create()
-    assert 'Missing activation key!' in context.value.response.text
+    assert 'Test' in context.value.response.text
 
 
 def test_negative_capsule_without_registration_enabled(
