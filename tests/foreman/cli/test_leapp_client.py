@@ -6,13 +6,14 @@
 
 :Team: Rocket
 
-:CaseImportance: High
+:CaseImportance: Critical
 
 :CaseAutomation: Automated
 
 """
 from broker import Broker
 import pytest
+from fauxfactory import gen_string
 
 from robottelo.config import settings
 from robottelo.constants import PRDS
@@ -200,7 +201,8 @@ def precondition_check_upgrade_and_install_leapp_tool(custom_leapp_host):
     if custom_leapp_host.run('needs-restarting -r').status == 1:
         custom_leapp_host.power_control(state='reboot', ensure=True)
 
-
+@pytest.mark.e2e
+@pytest.mark.skip_if_open('SAT-24023')
 @pytest.mark.parametrize(
     'upgrade_path',
     [
@@ -285,3 +287,89 @@ def test_leapp_upgrade_rhel(
     custom_leapp_host.clean_cached_properties()
     new_ver = str(custom_leapp_host.os_version)
     assert new_ver == upgrade_path['target_version']
+
+
+
+@pytest.mark.e2e
+@pytest.mark.skip_if_open('SAT-24023')
+@pytest.mark.parametrize(
+    'upgrade_path',
+    [
+        {'source_version': RHEL8_VER, 'target_version': RHEL9_VER},
+    ],
+    ids=lambda upgrade_path: f'{upgrade_path["source_version"]}'
+    f'_to_{upgrade_path["target_version"]}',
+)
+def test_leapp_upgrade_rhel_non_admin(
+    module_target_sat,
+    module_sca_manifest_org,
+    default_location,
+    custom_leapp_host,
+    upgrade_path,
+    verify_target_repo_on_satellite,
+    precondition_check_upgrade_and_install_leapp_tool,
+):
+    """Test to upgrade RHEL host to next major RHEL release using leapp preupgrade and leapp upgrade
+    job templates
+
+    :id: afd295ca-4b0e-439f-b880-ae92c300fd9f
+
+    :BZ: 2257302
+
+    :customerscenario: true
+
+    :steps:
+        1. Import a subscription manifest and enable, sync source & target repositories
+        2. Create LCE, Create CV, add repositories to it, publish and promote CV, Create AK, etc.
+        3. Register content host with AK
+        4. Verify that target rhel repositories are enabled on Satellite
+        5. Update all packages, install leapp tool and fix inhibitors
+        6. Create a non-admin user with "Organization admin", "Remote Execution Manager" and "Remote Execution User" role assigned to it.
+        7. Run Leapp Preupgrade and Leapp Upgrade job template from the user created in step 6.
+
+    :expectedresults:
+        1. Update RHEL OS major version to another major version from non-admin user role.
+    """
+    login = gen_string('alpha')
+    password = gen_string('alpha')
+    roles = ['Organization admin', 'Remote Execution Manager', 'Remote Execution User']
+    org = module_sca_manifest_org
+    user = module_target_sat.cli_factory.user(
+        {
+            'admin': False,
+            'login': login,
+            'password': password,
+            'organization-ids': org.id,
+            'location-ids': default_location.id,
+        }
+    )
+    for role in roles:
+        module_target_sat.cli.User.add_role({'id': user['id'], 'login': login, 'role': role})
+
+    # Run leapp preupgrade job
+    invocation_command = module_target_sat.cli_factory.job_invocation_with_credentials(
+        {
+            'job-template': 'Run preupgrade via Leapp',
+            'search-query': f'name = {custom_leapp_host.hostname}',
+            'organization-id': org.id,
+            'location-id': default_location.id,
+        },
+        (login, password),
+    )
+    result = module_target_sat.cli.JobInvocation.info({'id': invocation_command['id']})
+    assert result['success'] == '1'
+
+    # Run leapp upgrade job
+    invocation_command = module_target_sat.cli_factory.job_invocation_with_credentials(
+        {
+            'job-template': 'Run upgrade via Leapp',
+            'search-query': f'name = {custom_leapp_host.hostname}',
+            'organization-id': org.id,
+            'location-id': default_location.id,
+            'inputs': 'Reboot=false',
+        },
+        (login, password),
+    )
+    custom_leapp_host.power_control(state='reboot')
+    result = module_target_sat.cli.JobInvocation.info({'id': invocation_command['id']})
+    assert result['success'] == '1'
