@@ -21,7 +21,7 @@ from robottelo.config import settings
 def test_positive_upload_host_facts(
     module_target_sat,
     rhel_contenthost,
-    module_sca_manifest_org,
+    module_entitlement_manifest_org,
     module_location,
     module_activation_key,
 ):
@@ -41,7 +41,7 @@ def test_positive_upload_host_facts(
     :customerscenario: true
     """
     with module_target_sat.ui_session() as session:
-        session.organization.select(module_sca_manifest_org.name)
+        session.organization.select(module_entitlement_manifest_org.name)
         session.location.select(module_location.name)
         cmd = session.host.get_register_command(
             {
