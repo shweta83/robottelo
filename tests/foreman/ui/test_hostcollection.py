@@ -11,6 +11,7 @@
 :CaseImportance: High
 
 """
+
 import time
 
 from broker import Broker
@@ -25,14 +26,14 @@ from robottelo.utils.datafactory import gen_string
 
 @pytest.fixture(scope='module')
 def module_manifest():
-    with Manifester(manifest_category=settings.manifest.entitlement) as manifest:
+    with Manifester(manifest_category=settings.manifest.golden_ticket) as manifest:
         yield manifest
 
 
 @pytest.fixture(scope='module')
 def module_org_with_parameter(module_target_sat, module_manifest):
     # adding remote_execution_connect_by_ip=Yes at org level
-    org = module_target_sat.api.Organization(simple_content_access=False).create()
+    org = module_target_sat.api.Organization().create()
     module_target_sat.api.Parameter(
         name='remote_execution_connect_by_ip',
         parameter_type='boolean',
@@ -60,7 +61,7 @@ def module_repos_collection(module_org_with_parameter, module_lce, module_target
             module_target_sat.cli_factory.YumRepository(url=settings.repos.yum_6.url),
         ],
     )
-    repos_collection.setup_content(module_org_with_parameter.id, module_lce.id)
+    repos_collection.setup_content(module_org_with_parameter.id, module_lce.id, override=True)
     return repos_collection
 
 
@@ -756,8 +757,8 @@ def test_positive_install_modular_errata(
     """
     stream = "0"
     version = "20180704111719"
-    _module_install_command = 'dnf -y module install {}:{}:{}'.format(
-        constants.FAKE_4_CUSTOM_PACKAGE_NAME, stream, version
+    _module_install_command = (
+        f'dnf -y module install {constants.FAKE_4_CUSTOM_PACKAGE_NAME}:{stream}:{version}'
     )
     _run_remote_command_on_content_hosts(_module_install_command, vm_content_hosts_module_stream)
     _run_remote_command_on_content_hosts('dnf -y upload-profile', vm_content_hosts_module_stream)

@@ -8,6 +8,7 @@ Subcommands::
      roles                         Manage ansible roles
      variables                     Manage ansible variables
 """
+
 from robottelo.cli.base import Base
 
 
@@ -50,6 +51,12 @@ class Ansible(Base):
     def variables_create(cls, options=None):
         """Create ansible variables"""
         cls.command_sub = 'variables create'
+        return cls.execute(cls._construct_command(options), output_format='csv')
+
+    @classmethod
+    def variables_delete(cls, options=None):
+        """Delete ansible variables"""
+        cls.command_sub = 'variables delete'
         return cls.execute(cls._construct_command(options), output_format='csv')
 
     @classmethod

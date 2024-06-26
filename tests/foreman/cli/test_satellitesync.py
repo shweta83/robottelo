@@ -11,6 +11,7 @@
 :CaseImportance: High
 
 """
+
 import os
 from time import sleep
 
@@ -206,6 +207,16 @@ def function_synced_AC_repo(target_sat, function_org, function_product):
     )
     target_sat.cli.Repository.synchronize({'id': repo['id']})
     return repo
+
+
+@pytest.fixture
+def function_restrictive_umask(target_sat):
+    new_mask = '077'
+    mask_override = f'umask {new_mask} # {gen_string("alpha")}'
+    target_sat.execute(f'echo "{mask_override}" >> /etc/bashrc')
+    assert new_mask in target_sat.execute('umask').stdout, f'Failed to set new umask to {new_mask}'
+    yield
+    target_sat.execute(f'sed -i "/{mask_override}/d" /etc/bashrc')
 
 
 @pytest.mark.run_in_one_thread
@@ -1412,6 +1423,77 @@ class TestContentViewSync:
         assert exported_files == imported_files, 'Imported Files do not match the export'
 
     @pytest.mark.tier3
+    def test_postive_export_cv_syncable_with_permissions(
+        self,
+        request,
+        export_import_cleanup_function,
+        target_sat,
+        function_restrictive_umask,
+        function_org,
+        function_synced_custom_repo,
+        function_synced_file_repo,
+    ):
+        """Export CV with mixed content in syncable format with restrictive umask
+        and check the exported files permissions stay sufficient for import.
+
+        :id: f0d83ca5-2213-4649-a248-3de4f131df68
+
+        :setup:
+            1. Synced repositories of syncable-supported content types: yum, file
+            2. Restrictive umask (0077) is set for non-login shell.
+
+        :steps:
+            1. Create CV, add all setup repos and publish.
+            2. Export CV version contents in syncable format.
+            3. Check the permissions of exported files.
+
+        :expectedresults:
+            1. Exported files have sufficient permissions for import.
+
+        :BZ: 2233162
+
+        :customerscenario: true
+        """
+        # Create CV, add all setup repos and publish
+        cv = target_sat.cli_factory.make_content_view({'organization-id': function_org.id})
+        repos = [
+            function_synced_custom_repo,
+            function_synced_file_repo,
+        ]
+        for repo in repos:
+            target_sat.cli.ContentView.add_repository(
+                {
+                    'id': cv['id'],
+                    'organization-id': function_org.id,
+                    'repository-id': repo['id'],
+                }
+            )
+        target_sat.cli.ContentView.publish({'id': cv['id']})
+        exporting_cv = target_sat.cli.ContentView.info({'id': cv['id']})
+        exporting_cvv = target_sat.cli.ContentView.version_info(
+            {'id': exporting_cv['versions'][0]['id']}
+        )
+
+        # Export CV version contents in syncable format
+        assert target_sat.validate_pulp_filepath(function_org, PULP_EXPORT_DIR) == ''
+        target_sat.cli.ContentExport.completeVersion(
+            {'id': exporting_cvv['id'], 'organization-id': function_org.id, 'format': 'syncable'}
+        )
+
+        # Check the permissions of exported files
+        paths = target_sat.validate_pulp_filepath(
+            function_org, PULP_EXPORT_DIR, file_names='*'
+        ).split()
+        assert len(paths) > 0, 'Nothing found at export path'
+        assert all(
+            [
+                '644' in target_sat.execute(f'stat -c %a {path}').stdout
+                for path in paths
+                if 'metadata.json' not in path
+            ]
+        ), 'Unexpected permission for one or more exported files'
+
+    @pytest.mark.tier3
     def test_postive_export_import_cv_with_file_content(
         self,
         target_sat,
@@ -1585,7 +1667,6 @@ class TestContentViewSync:
         assert len(importing_cvv) == 1
 
     @pytest.mark.tier3
-    @pytest.mark.skip_if_open("BZ:2262379")
     def test_postive_export_import_ansible_collection_repo(
         self,
         target_sat,
@@ -1606,6 +1687,10 @@ class TestContentViewSync:
 
         :expectedresults:
             1. Imported library should have the ansible collection present in the imported product.
+
+        :BlockedBy: SAT-23051
+
+        :Verifies: SAT-23051
         """
         # setup ansible_collection product and repo
         export_product = target_sat.cli_factory.make_product({'organization-id': function_org.id})

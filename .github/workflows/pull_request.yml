@@ -8,6 +8,8 @@ on:
 env:
     PYCURL_SSL_LIBRARY: openssl
     ROBOTTELO_BUGZILLA__API_KEY: ${{ secrets.BUGZILLA_KEY }}
+    ROBOTTELO_JIRA__API_KEY: ${{ secrets.JIRA_KEY }}
+    ROBOTTELO_ROBOTTELO__SETTINGS__IGNORE_VALIDATION_ERRORS: true
 
 jobs:
   codechecks:
@@ -41,9 +43,6 @@ jobs:
           cp broker_settings.yaml.example broker_settings.yaml
           cp .env.example .env
 
-      - name: Pre Commit Checks
-        uses: pre-commit/action@v3.0.1
-
       - name: Collect Tests
         run: |
           # To skip vault login in pull request checks
@@ -64,6 +63,7 @@ jobs:
         run: |
           # To skip vault login in pull request checks
           export VAULT_SECRET_ID_FOR_DYNACONF=somesecret
+          export ROBOTTELO_SERVER__HOSTNAME=""
           pytest -sv tests/robottelo/
 
       - name: Make Docs

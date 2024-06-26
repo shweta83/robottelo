@@ -9,6 +9,7 @@
 :team: Phoenix-subscriptions
 
 """
+
 from datetime import datetime
 
 from airgun.session import Session
@@ -28,6 +29,8 @@ from robottelo.utils.virtwho import (
     get_configure_id,
     get_configure_option,
     get_virtwho_status,
+    hypervisor_guest_mapping_check_legacy_ui,
+    hypervisor_guest_mapping_newcontent_ui,
     restart_virtwho_service,
     update_configure_option,
 )
@@ -39,7 +42,7 @@ class TestVirtwhoConfigforEsx:
     @pytest.mark.upgrade
     @pytest.mark.parametrize('deploy_type_ui', ['id', 'script'], indirect=True)
     def test_positive_deploy_configure_by_id_script(
-        self, module_sca_manifest_org, org_session, form_data_ui, deploy_type_ui
+        self, module_sca_manifest_org, org_session, form_data_ui, deploy_type_ui, default_location
     ):
         """Verify configure created and deployed with id.
 
@@ -49,12 +52,23 @@ class TestVirtwhoConfigforEsx:
             1. Config can be created and deployed by command or script
             2. No error msg in /var/log/rhsm/rhsm.log
             3. Report is sent to satellite
-            4. Virtual sku can be generated and attached
-            5. Config can be deleted
+            4. Subscription Status set to 'Simple Content Access', and generate mapping in Legacy UI
+            5. Check Hypervisor host subscription status and hypervisor host and virtual guest mapping in UI
+            6. Config can be deleted
 
         :CaseImportance: High
         """
+        hypervisor_name, guest_name = deploy_type_ui
+        # Check virt-who config status
         assert org_session.virtwho_configure.search(form_data_ui['name'])[0]['Status'] == 'ok'
+
+        # Check Hypervisor host subscription status and hypervisor host and virtual guest mapping in Legacy UI
+        hypervisor_guest_mapping_check_legacy_ui(
+            org_session, form_data_ui, default_location, hypervisor_name, guest_name
+        )
+
+        # Check Hypervisor host subscription status and hypervisor host and virtual guest mapping in UI
+        hypervisor_guest_mapping_newcontent_ui(org_session, hypervisor_name, guest_name)
 
     @pytest.mark.tier2
     def test_positive_debug_option(
@@ -243,7 +257,12 @@ class TestVirtwhoConfigforEsx:
 
     @pytest.mark.tier2
     def test_positive_last_checkin_status(
-        self, module_sca_manifest_org, virtwho_config_ui, form_data_ui, org_session
+        self,
+        module_sca_manifest_org,
+        virtwho_config_ui,
+        form_data_ui,
+        org_session,
+        default_location,
     ):
         """Verify the Last Checkin status on Content Hosts Page.
 
@@ -265,6 +284,7 @@ class TestVirtwhoConfigforEsx:
         )
         time_now = org_session.browser.get_client_datetime()
         assert org_session.virtwho_configure.search(name)[0]['Status'] == 'ok'
+        org_session.location.select(default_location.name)
         checkin_time = org_session.contenthost.search(hypervisor_name)[0]['Last Checkin']
         # 10 mins margin to check the Last Checkin time
         assert (
@@ -306,9 +326,7 @@ class TestVirtwhoConfigforEsx:
         option = "env"
         config_id = get_configure_id(name)
         config_file = get_configure_file(config_id)
-        env_error = (
-            f"option {{\'{option}\'}} is not exist or not be enabled in {{\'{config_file}\'}}"
-        )
+        env_error = f"option {{'{option}'}} is not exist or not be enabled in {{'{config_file}'}}"
         with pytest.raises(Exception) as exc_info:  # noqa: PT011 - TODO determine better exception
             get_configure_option({option}, {config_file})
         assert str(exc_info.value) == env_error

@@ -63,7 +63,7 @@ from robottelo.utils.installer import InstallerCommand
 POWER_OPERATIONS = {
     VmState.RUNNING: 'running',
     VmState.STOPPED: 'stopped',
-    'reboot': 'reboot'
+    'reboot': 'reboot',
     # TODO paused, suspended, shelved?
 }
 
@@ -73,6 +73,7 @@ def lru_sat_ready_rhel(rhel_ver):
     rhel_version = rhel_ver or settings.server.version.rhel_version
     deploy_args = {
         'deploy_rhel_version': rhel_version,
+        'deploy_network_type': 'ipv6' if settings.server.is_ipv6 else 'ipv4',
         'deploy_flavor': settings.flavors.default,
         'promtail_config_template_file': 'config_sat.j2',
         'workflow': settings.server.deploy_workflows.os,
@@ -341,7 +342,7 @@ class ContentHost(Host, ContentHostMixins):
     def os_version(self):
         """Get host's OS version information
 
-        :returns: A ``packaging.version.Version`` instance
+        :return: A ``packaging.version.Version`` instance
         """
         return Version(self._os_release['VERSION_ID'])
 
@@ -438,7 +439,10 @@ class ContentHost(Host, ContentHostMixins):
         if ensure and state in [VmState.RUNNING, 'reboot']:
             try:
                 wait_for(
-                    self.connect, fail_condition=lambda res: res is not None, handle_exception=True
+                    self.connect,
+                    fail_condition=lambda res: res is not None,
+                    timeout=300,
+                    handle_exception=True,
                 )
             # really broad diaper here, but connection exceptions could be a ton of types
             except TimedOutError as toe:
@@ -471,7 +475,7 @@ class ContentHost(Host, ContentHostMixins):
             provided file will be saved in /tmp/ directory.
         :param str file_name: New name of the Downloaded file else its given from file_url
 
-        :returns: Returns list containing complete file path and name of downloaded file.
+        :return: Returns list containing complete file path and name of downloaded file.
         """
         file_name = PurePath(file_name or file_url).name
         local_path = PurePath(local_path or '/tmp') / file_name
@@ -795,6 +799,17 @@ class ContentHost(Host, ContentHostMixins):
         cmd = target.satellite.cli.HostRegistration.generate_command(options)
         return self.execute(cmd.strip('\n'))
 
+    def api_register(self, target, **kwargs):
+        """Register a content host using global registration through API.
+
+        :param target: Satellite or Capsule object to register to.
+        :param kwargs: Additional keyword arguments to pass to the API call.
+        :return: The result of the API call.
+        """
+        kwargs['insecure'] = kwargs.get('insecure', True)
+        command = target.satellite.api.RegistrationCommand(**kwargs).create()
+        return self.execute(command.strip('\n'))
+
     def register_contenthost(
         self,
         org='Default_Organization',
@@ -809,6 +824,7 @@ class ContentHost(Host, ContentHostMixins):
         auto_attach=False,
         serverurl=None,
         baseurl=None,
+        enable_proxy=False,
     ):
         """Registers content host on foreman server either by specifying
         organization name and activation key name or by specifying organization
@@ -837,10 +853,7 @@ class ContentHost(Host, ContentHostMixins):
             registration.
         """
 
-        if username and password:
-            userpass = f' --username {username} --password {password}'
-        else:
-            userpass = ''
+        userpass = f' --username {username} --password {password}' if username and password else ''
         # Setup the base command
         cmd = 'subscription-manager register'
         if org:
@@ -868,6 +881,7 @@ class ContentHost(Host, ContentHostMixins):
             cmd += f' --serverurl {serverurl}'
         if baseurl:
             cmd += f' --baseurl {baseurl}'
+
         return self.execute(cmd)
 
     def unregister(self):
@@ -883,12 +897,17 @@ class ContentHost(Host, ContentHostMixins):
         """Get a remote file from the broker virtual machine."""
         self.session.sftp_read(source=remote_path, destination=local_path)
 
-    def put(self, local_path, remote_path=None):
+    def put(self, local_path, remote_path=None, temp_file=False):
         """Put a local file to the broker virtual machine.
         If local_path is a manifest object, write its contents to a temporary file
         then continue with the upload.
         """
-        if 'utils.manifest' in str(local_path):
+        if temp_file:
+            with NamedTemporaryFile(dir=robottelo_tmp_dir) as content_file:
+                content_file.write(str.encode(local_path))
+                content_file.flush()
+                self.session.sftp_write(source=content_file.name, destination=remote_path)
+        elif 'utils.manifest' in str(local_path):
             with NamedTemporaryFile(dir=robottelo_tmp_dir) as content_file:
                 content_file.write(local_path.content.read())
                 content_file.flush()
@@ -908,6 +927,13 @@ class ContentHost(Host, ContentHostMixins):
         result = self.execute(f'chmod 600 {destination_key_path}')
         if result.status != 0:
             raise CLIFactoryError(f'Failed to chmod ssh key file:\n{result.stderr}')
+
+    def enable_rhsm_proxy(self, hostname, port=None):
+        """Configures proxy for subscription manager"""
+        cmd = f"subscription-manager config --server.proxy_hostname={hostname}"
+        if port:
+            cmd += f' --server.proxy_port={port}'
+        self.execute(cmd)
 
     def add_authorized_key(self, pub_key):
         """Inject a public key into the authorized keys file
@@ -932,11 +958,7 @@ class ContentHost(Host, ContentHostMixins):
         # ensure ssh directory exists
         self.execute(f'mkdir -p {ssh_path}')
         # append the key if doesn't exists
-        self.execute(
-            "grep -q '{key}' {dest} || echo '{key}' >> {dest}".format(
-                key=key_content, dest=auth_file
-            )
-        )
+        self.execute(f"grep -q '{key_content}' {auth_file} || echo '{key_content}' >> {auth_file}")
         # set proper permissions
         self.execute(f'chmod 700 {ssh_path}')
         self.execute(f'chmod 600 {auth_file}')
@@ -1457,7 +1479,7 @@ class ContentHost(Host, ContentHostMixins):
             raise ContentHostError('There was an error installing katello-host-tools-tracer')
         self.execute('katello-tracer-upload')
 
-    def register_to_cdn(self, pool_ids=None):
+    def register_to_cdn(self, pool_ids=None, enable_proxy=False):
         """Subscribe satellite to CDN"""
         if pool_ids is None:
             pool_ids = [settings.subscription.rhn_poolid]
@@ -1467,6 +1489,7 @@ class ContentHost(Host, ContentHostMixins):
             lce=None,
             username=settings.subscription.rhn_username,
             password=settings.subscription.rhn_password,
+            enable_proxy=enable_proxy,
         )
         if cmd_result.status != 0:
             raise ContentHostError(
@@ -1482,7 +1505,7 @@ class ContentHost(Host, ContentHostMixins):
         """Check the provisioned host status by pinging the ip of host
 
         :param host: IP address or hostname of the provisioned host
-        :returns: None
+        :return: None
         :raises: : `HostPingFailed` if the host is not pingable
         """
         result = self.execute(
@@ -1597,7 +1620,8 @@ class Capsule(ContentHost, CapsuleMixins):
         """General purpose installer"""
         if not installer_obj:
             command_opts = {'scenario': self.__class__.__name__.lower()}
-            command_opts.update(cmd_kwargs)
+            if cmd_kwargs:
+                command_opts.update(cmd_kwargs)
             installer_obj = InstallerCommand(*cmd_args, **command_opts)
         return self.execute(installer_obj.get_command(), timeout=0)
 
@@ -1619,6 +1643,17 @@ class Capsule(ContentHost, CapsuleMixins):
             release=settings.capsule.version.release,
             snap=settings.capsule.version.snap,
         )
+
+    def enable_ipv6_http_proxy(self):
+        """Execute procedures for enabling IPv6 HTTP Proxy on Capsule using SM"""
+        if all([settings.server.is_ipv6, settings.server.http_proxy_ipv6_url]):
+            url = urlparse(settings.server.http_proxy_ipv6_url)
+            self.enable_rhsm_proxy(url.hostname, url.port)
+
+    def disable_ipv6_http_proxy(self):
+        """Executes procedures for disabling IPv6 HTTP Proxy on Capsule"""
+        if settings.server.is_ipv6:
+            self.execute('subscription-manager remove server.proxy_hostname server.proxy_port')
 
     def capsule_setup(self, sat_host=None, capsule_cert_opts=None, **installer_kwargs):
         """Prepare the host and run the capsule installer"""
@@ -1696,22 +1731,6 @@ class Capsule(ContentHost, CapsuleMixins):
         if result.status != 0:
             raise SatelliteHostError(f'Failed to enable pull provider: {result.stdout}')
 
-    def run_installer_arg(self, *args, timeout='20m'):
-        """Run an installer argument on capsule"""
-        installer_args = list(args)
-        installer_command = InstallerCommand(
-            installer_args=installer_args,
-        )
-        result = self.execute(
-            installer_command.get_command(),
-            timeout=timeout,
-        )
-        if result.status != 0:
-            raise SatelliteHostError(
-                f'Failed to execute with arguments: {installer_args} and,'
-                f' the stderr is {result.stderr}'
-            )
-
     def set_mqtt_resend_interval(self, value):
         """Set the time interval in seconds at which the notification should be
         re-sent to the mqtt host until the job is picked up or cancelled"""
@@ -1754,6 +1773,29 @@ class Capsule(ContentHost, CapsuleMixins):
         self._cli._configured = True
         return self._cli
 
+    def enable_satellite_or_capsule_module_for_rhel8(self):
+        """Enable Satellite/Capsule module for RHEL8.
+        Note: Make sure required repos are enabled before using this.
+        """
+        if self.os_version.major == 8:
+            if settings.server.is_ipv6:
+                self.execute(
+                    f"echo -e 'proxy={settings.server.http_proxy_ipv6_url}' >> /etc/dnf/dnf.conf"
+                )
+            assert (
+                self.execute(
+                    f'dnf -y module enable {self.product_rpm_name}:el{self.os_version.major}'
+                ).status
+                == 0
+            )
+
+    def install_satellite_or_capsule_package(self):
+        """Install Satellite/Capsule package. Also handles module enablement for RHEL8.
+        Note: Make sure required repos are enabled before using this.
+        """
+        self.enable_satellite_or_capsule_module_for_rhel8()
+        assert self.execute(f'dnf -y install {self.product_rpm_name}').status == 0
+
 
 class Satellite(Capsule, SatelliteMixins):
     product_rpm_name = 'satellite'
@@ -1781,6 +1823,55 @@ class Satellite(Capsule, SatelliteMixins):
         self._api = type('api', (), {'_configured': False})
         to_clear = [k for k in sys.modules if 'nailgun' in k]
         [sys.modules.pop(k) for k in to_clear]
+
+    def enable_ipv6_http_proxy(self):
+        """Execute procedures for enabling IPv6 HTTP Proxy"""
+        if not all([settings.server.is_ipv6, settings.server.http_proxy_ipv6_url]):
+            logger.warning(
+                'The IPv6 HTTP Proxy setting is not enabled. Skipping the IPv6 HTTP Proxy setup.'
+            )
+            return None
+        proxy_name = 'Robottelo IPv6 Automation Proxy'
+        if not self.cli.HttpProxy.exists(search=('name', proxy_name)):
+            http_proxy = self.api.HTTPProxy(
+                name=proxy_name, url=settings.server.http_proxy_ipv6_url
+            ).create()
+        else:
+            logger.info(
+                'The IPv6 HTTP Proxy is already enabled. Skipping the IPv6 HTTP Proxy setup.'
+            )
+            http_proxy = self.api.HTTPProxy().search(query={'search': f'name={proxy_name}'})[0]
+        # Setting HTTP Proxy as default in the settings
+        self.cli.Settings.set(
+            {
+                'name': 'content_default_http_proxy',
+                'value': proxy_name,
+            }
+        )
+        self.cli.Settings.set(
+            {
+                'name': 'http_proxy',
+                'value': settings.server.http_proxy_ipv6_url,
+            }
+        )
+        return http_proxy
+
+    def disable_ipv6_http_proxy(self, http_proxy):
+        """Execute procedures for disabling IPv6 HTTP Proxy"""
+        if http_proxy:
+            http_proxy.delete()
+            self.cli.Settings.set(
+                {
+                    'name': 'content_default_http_proxy',
+                    'value': '',
+                }
+            )
+            self.cli.Settings.set(
+                {
+                    'name': 'http_proxy',
+                    'value': '',
+                }
+            )
 
     @property
     def api(self):
@@ -1866,9 +1957,27 @@ class Satellite(Capsule, SatelliteMixins):
 
     @contextmanager
     def omit_credentials(self):
-        self.omitting_credentials = True
+        change = not self.omitting_credentials  # if not already set to omit
+        if change:
+            self.omitting_credentials = True
+            # if CLI is already created
+            if self._cli._configured:
+                for name, obj in self._cli.__dict__.items():
+                    with contextlib.suppress(
+                        AttributeError
+                    ):  # not everything has an mro method, we don't care about them
+                        if Base in obj.mro():
+                            getattr(self._cli, name).omitting_credentials = True
         yield
-        self.omitting_credentials = False
+        if change:
+            self.omitting_credentials = False
+            if self._cli._configured:
+                for name, obj in self._cli.__dict__.items():
+                    with contextlib.suppress(
+                        AttributeError
+                    ):  # not everything has an mro method, we don't care about them
+                        if Base in obj.mro():
+                            getattr(self._cli, name).omitting_credentials = False
 
     @contextmanager
     def ui_session(self, testname=None, user=None, password=None, url=None, login=True):
@@ -1885,17 +1994,15 @@ class Satellite(Capsule, SatelliteMixins):
             return None
 
         try:
-            ui_session = Session(
+            with Session(
                 session_name=testname or get_caller(),
                 user=user or settings.server.admin_username,
                 password=password or settings.server.admin_password,
                 url=url,
                 hostname=self.hostname,
                 login=login,
-            )
-            yield ui_session
-        except Exception:
-            raise
+            ) as ui_session:
+                yield ui_session
         finally:
             if self.record_property is not None and settings.ui.record_video:
                 video_url = settings.ui.grid_url.replace(
@@ -2294,6 +2401,23 @@ class Satellite(Capsule, SatelliteMixins):
         )
         return inventory_sync
 
+    def register_contenthost(
+        self,
+        org='Default_Organization',
+        lce='Library',
+        username=settings.server.admin_username,
+        password=settings.server.admin_password,
+        enable_proxy=False,
+    ):
+        """Satellite Registration to CDN"""
+        # Enabling proxy for IPv6
+        if enable_proxy and all([settings.server.is_ipv6, settings.server.http_proxy_ipv6_url]):
+            url = urlparse(settings.server.http_proxy_ipv6_url)
+            self.enable_rhsm_proxy(url.hostname, url.port)
+        return super().register_contenthost(
+            org=org, lce=lce, username=username, password=password, enable_proxy=enable_proxy
+        )
+
 
 class SSOHost(Host):
     """Class for RHSSO functions and setup"""
@@ -2511,7 +2635,7 @@ class IPAHost(Host):
                 _, password = line.split(': ', 2)
                 break
         self.execute(f'ipa service-add HTTP/{self.satellite.hostname}')
-        _, domain = self.hostname.split('.', 1)
+        domain = self.execute('ipa realmdomains-show | awk \'{print $2}\'').stdout.strip()
         result = self.satellite.execute(
             f"ipa-client-install --password '{password}' "
             f'--domain {domain} '
