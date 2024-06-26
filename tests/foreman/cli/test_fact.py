@@ -68,7 +68,7 @@ def test_negative_list_by_name(module_target_sat):
 @pytest.mark.no_containers
 @pytest.mark.rhel_ver_list([settings.content_host.default_rhel_version])
 def test_positive_update_client_facts_verify_imported_values(
-    module_target_sat, rhel_contenthost, module_org, module_location, module_activation_key
+    module_target_sat, rhel_contenthost, module_entitlement_manifest_org, module_location, module_activation_key
 ):
     """Update client facts and verify the facts are updated in Satellite.
 
@@ -94,7 +94,7 @@ def test_positive_update_client_facts_verify_imported_values(
     assert rhel_contenthost.execute(add_interface_command).status == 0
     result = rhel_contenthost.register(
         target=module_target_sat,
-        org=module_org,
+        org=module_entitlement_manifest_org,
         loc=module_location,
         activation_keys=[module_activation_key.name],
     )
