@@ -48,7 +48,6 @@ def test_positive_update_login_page_footer_text(setting_update):
     :expectedresults: Parameter is updated successfully
     """
     login_text_value = random.choice(list(valid_data_list().values()))
-    setting_update.value = login_text_value
     setting_update = setting_update.update({'value'})
     assert setting_update.value == login_text_value
 
